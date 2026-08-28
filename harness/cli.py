@@ -1,0 +1,72 @@
+import argparse
+import json
+import sys
+
+from harness import run as runmod
+from harness import tools
+from harness.evaluate import is_healthy
+from harness.paths import RUNS_DIR
+
+
+def _read_checks(run_id: str):
+    data = json.loads((RUNS_DIR / run_id / "checks.json").read_text())
+    return data["checks"], data["score"]
+
+
+def cmd_build(args):
+    print(runmod.build_and_load(args.variant))
+
+
+def cmd_run(args):
+    runmod.run_variant(args.variant, expect_healthy=not args.allow_unhealthy)
+
+
+def cmd_verify(args):
+    run_id = (RUNS_DIR / f"last-{args.variant}").read_text().strip()
+    checks, score = _read_checks(run_id)
+    healthy = is_healthy(checks, score)
+    print(f"{run_id}: score={score} healthy={healthy}")
+    if args.expect_healthy and not healthy:
+        sys.exit(2)
+
+
+def cmd_cleanup_ns(args):
+    ns = runmod.cleanup_namespace(args.variant)
+    print(f"deleted namespace: {ns}")
+
+
+def cmd_eval(args):
+    sys.exit(
+        "scenario evaluation suite lands in Milestone 2; "
+        "use 'make e2e-base' for the Milestone 1 end-to-end path"
+    )
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="harness", description="PipelineFixRL harness")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    b = sub.add_parser("build", help="build + kind-load the app image")
+    b.add_argument("--variant", default="base")
+    b.set_defaults(func=cmd_build)
+
+    r = sub.add_parser("run", help="full workflow for a variant")
+    r.add_argument("--variant", default="base")
+    r.add_argument("--allow-unhealthy", action="store_true",
+                   help="do not exit non-zero when the variant is unhealthy")
+    r.set_defaults(func=cmd_run)
+
+    v = sub.add_parser("verify", help="check the last run's recorded score")
+    v.add_argument("--variant", default="base")
+    v.add_argument("--expect-healthy", action="store_true")
+    v.set_defaults(func=cmd_verify)
+
+    c = sub.add_parser("cleanup-ns", help="delete the last run's namespace")
+    c.add_argument("--variant", default="base")
+    c.set_defaults(func=cmd_cleanup_ns)
+
+    e = sub.add_parser("eval", help="(M2) run the scenario suite")
+    e.set_defaults(func=cmd_eval)
+
+    args = p.parse_args(argv)
+    args.func(args)

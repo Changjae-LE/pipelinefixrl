@@ -1,0 +1,4 @@
+# Runtime deps for the container image (kept separate from pyproject so the
+# Docker build does not need the full project metadata / editable install).
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
