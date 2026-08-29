@@ -1,0 +1,12 @@
+diff --git a/charts/app/values.yaml b/charts/app/values.yaml
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -27,7 +27,7 @@ resources:
+ # Probes are intentionally expressed as full blocks so scenarios can patch them.
+ readinessProbe:
+   httpGet:
+-    path: /health2
++    path: /health
+     port: 8000
+   initialDelaySeconds: 2
+   periodSeconds: 5

@@ -13,10 +13,14 @@ ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 VENV := $(ROOT)/.venv
 PY   := $(VENV)/Scripts/python.exe
 
-.PHONY: help setup doctor kind-up kind-down test lint build deploy-base verify-base clean-ns e2e-base eval
+.PHONY: help setup doctor kind-up kind-down test lint build deploy-base verify-base clean-ns e2e-base \
+        scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval
+
+SID ?= scenario-001
 
 help:
-	@echo "targets: setup doctor kind-up kind-down test lint build deploy-base verify-base clean-ns e2e-base eval"
+	@echo "M1: setup doctor kind-up kind-down test lint build deploy-base verify-base clean-ns e2e-base"
+	@echo "M2: scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval"
 
 setup:
 	python -m venv "$(VENV)"
@@ -53,5 +57,26 @@ clean-ns:
 e2e-base: doctor kind-up test deploy-base verify-base clean-ns
 	@echo "e2e-base: PASS"
 
+# --- Milestone 2: scenario-001 ---------------------------------------------
+
+scenario-001-broken:
+	"$(PY)" -m harness scenario --id scenario-001 --variant broken
+	"$(PY)" -m harness scenario-cleanup-ns --id scenario-001 --variant broken
+
+scenario-001-golden:
+	"$(PY)" -m harness scenario --id scenario-001 --variant golden
+	"$(PY)" -m harness scenario-cleanup-ns --id scenario-001 --variant golden
+
+scenario-001-compose:
+	"$(PY)" -m harness compose-check --id scenario-001
+
+# broken then golden then compose check; each variant's namespace is deleted
+# after its run.
+scenario-001: scenario-001-broken scenario-001-golden scenario-001-compose
+	@echo "scenario-001: PASS (broken matched expectation, golden scored 100, patches compose to base)"
+
+e2e-scenario-001: doctor kind-up scenario-001
+	@echo "e2e-scenario-001: PASS"
+
 eval:
-	"$(PY)" -m harness eval
+	"$(PY)" -m harness eval --id $(SID)

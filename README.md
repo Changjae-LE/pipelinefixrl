@@ -8,8 +8,11 @@ the micro1 Agentic Workflows Hackathon.
 
 ## Status
 
-- **Milestone 1** (healthy base deploy end to end) — implemented.
-- **Milestone 2** (scenario-001) — not started.
+- **Milestone 1** (healthy base deploy end to end) — implemented; evidence in
+  [`docs/M1_EVIDENCE.md`](docs/M1_EVIDENCE.md).
+- **Milestone 2** (scenario-001, incorrect readiness probe path) — implemented;
+  evidence in [`docs/M2_EVIDENCE.md`](docs/M2_EVIDENCE.md).
+- Scenarios 002–010 and the baseline/advanced agents — not started.
 
 ## Prerequisites
 
@@ -33,6 +36,27 @@ make test        # pytest
 make e2e-base    # doctor -> kind-up -> test -> deploy-base -> verify-base -> clean-ns
 make kind-down   # delete the cluster, clean .state/
 ```
+
+## Quickstart (Milestone 2 — scenario-001)
+
+```bash
+make kind-up
+make scenario-001-broken    # deploy base + break.patch; must FAIL readiness, score <= 60
+make scenario-001-golden    # deploy base + break.patch + golden.patch; must score 100
+make scenario-001-compose   # prove break.patch + golden.patch == base (byte-identical)
+make scenario-001           # all three of the above in order
+# or, self-contained:
+make e2e-scenario-001       # doctor -> kind-up -> scenario-001
+make kind-down
+```
+
+Each scenario lives in `harness/scenarios/<id>/` as `scenario.yaml` (definition +
+per-variant expectations), `task.md` (agent-facing), `break.patch`, and
+`golden.patch`. The runner copies the base tree, applies the patch(es), builds a
+uniquely tagged image, deploys into a per-variant namespace, scores it with the
+same deterministic checks as the base app, then compares the result to the
+scenario's expectation block. A diff-based anti-cheat check rejects removed
+probes, weakened `securityContext`, edited tests, or `replicaCount: 0`.
 
 ## Guarantees
 

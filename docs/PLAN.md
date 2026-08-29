@@ -217,20 +217,26 @@ All commands run from `C:\micro` in Git Bash, Docker Desktop running.
    surface (`charts/app/values.yaml`), and the definition of done (score 100).
    Does **not** reveal the one-line fix.
 3. `break.patch` — unified diff on `charts/app/values.yaml`:
-   `readinessProbe.httpGet.path: /health` → `/healthz`.
-4. `golden.patch` — unified diff reverting `/healthz` → `/health` (applied on the
-   broken tree, or an equivalent absolute patch on the base tree).
-5. Harness scenario support:
-   - `harness/run.py` `run_scenario(scenario_id, variant)`:
-     copy base tree to `.state/runs/<run-id>/tree/` → `git apply` the selected
-     patch(es) → build/load/deploy from that tree → collect → evaluate against
-     `scenario.yaml.expect.<variant>`.
-   - Anti-cheat diff check (SPEC §7.2) wired in; golden must not trip it.
-   - `evaluate.py` gains `--expect` handling: compares actual checks to
-     `must_fail` / `must_pass` / `score_min` / `score_max`.
+   `readinessProbe.httpGet.path: /health` → `/health2`.
+4. `golden.patch` — unified diff reverting `/health2` → `/health`, applied on the
+   broken tree (`golden` variant = base + break.patch + golden.patch).
+5. Harness scenario support (`harness/scenario.py`):
+   - `run_scenario(scenario_id, variant)`: copy base tree to
+     `.state/runs/<run-id>/tree/` → apply the selected patch(es) with
+     `patch -p1` (byte-exact on this host; `git apply` fallback) → build/load/
+     deploy from that tree into a per-variant namespace → collect → `evaluate`
+     → compare against `scenario.yaml`'s `expect.<variant>` block
+     (`must_fail` / `must_pass` / `score_min` / `score_max` / `evidence` /
+     `anticheat_clean`); writes `verdict.json`.
+   - `_anticheat(tree)` (SPEC §7.2): probes present in values, `securityContext`
+     `runAsNonRoot`/`allowPrivilegeEscalation`/`readOnlyRootFilesystem` intact,
+     `replicaCount != 0`, no `tests/**` byte change. Golden must not trip it.
+   - `compose_check(scenario_id)`: applies break + golden to a fresh base-tree
+     copy and asserts every source file is byte-identical to base.
 6. Make targets: `scenario-001-broken`, `scenario-001-golden`,
-   `scenario-001` (runs both, asserts expectations), and `eval` (runs all
-   scenarios then `kind-down`).
+   `scenario-001-compose`, `scenario-001` (all three, each variant's namespace
+   deleted after its run), `e2e-scenario-001` (`doctor kind-up scenario-001`),
+   and `eval` (`harness eval --id <SID>`: broken + golden + compose).
 7. `README.md` updated with the scenario workflow.
 
 ### M2 acceptance criteria (exact)
@@ -249,7 +255,7 @@ All commands run from `C:\micro` in Git Bash, Docker Desktop running.
   target.
 - **B3 — broken evidence.** `.state/runs/<run-id>/events.txt` contains at least
   one `Warning` `Unhealthy` event referencing the readiness probe and HTTP
-  `404`; pod logs show `GET /healthz` 404 lines. Artifacts non-empty as in A10.
+  `404`; pod logs show `GET /health2` 404 lines. Artifacts non-empty as in A10.
 - **B4 — golden full score.** `make scenario-001-golden`: all weighted checks
   `PASS`; `report.txt` `SCORE: 100`; matches
   `scenario.yaml.expect.golden.must_pass` and `score_min: 100`; target exits `0`.
@@ -259,10 +265,13 @@ All commands run from `C:\micro` in Git Bash, Docker Desktop running.
   check reports no violation.
 - **B6 — break/golden compose.** Applying `break.patch` then `golden.patch` to
   the base tree yields a tree byte-identical to base (`git diff` empty).
-- **B7 — comparison output.** `make scenario-001` runs broken then golden,
-  writes a `.state/runs/` comparison line/table showing
-  `broken: SCORE <=60 (expected FAIL set matched)` vs
-  `golden: SCORE 100`, and exits `0` only if **both** match their expectations.
+- **B7 — comparison output.** `make scenario-001` runs `scenario-001-broken`,
+  `scenario-001-golden`, `scenario-001-compose` in order. Each variant writes
+  `.state/runs/<run-id>/verdict.json` (`score`, `expected`, `evidence`,
+  `anticheat_violations`, `matches_expectation`) and prints its `SCORE` +
+  `expectation : MATCH/MISMATCH` line. The aggregate target exits `0` only if
+  **all three** sub-targets exit `0` (i.e. broken matched its expectation,
+  golden scored 100, patches composed to base).
 - **B8 — isolation & cleanup.** Each variant runs in its own namespace; both
   namespaces are deleted after their runs (`kubectl get ns` clean); `make eval`
   deletes the cluster at the end. `~/.kube/config` unchanged throughout.
@@ -277,13 +286,16 @@ All commands run from `C:\micro` in Git Bash, Docker Desktop running.
 
 ## 7. Sequencing & stop points
 
-1. **M0** bootstrap + finalize version pins (needs: approval + host tools
-   installed + Docker running).
+1. **M0** bootstrap + finalize version pins. **DONE** (2026-08-28, commit
+   `67c767f`; kind `v0.33.0`, node `v1.37.0@sha256:a1ed56cf…`).
 2. **M1** app → tests → Docker → chart → kind scripts → harness deploy/verify →
-   Makefile. **Stop. Demonstrate A1–A14.**
-3. **M2** scenario-001 broken + golden. **Stop. Demonstrate B1–B10.**
+   Makefile. **DONE** — A1–A14 in `docs/M1_EVIDENCE.md` (commit `e112ede`,
+   cold-run addendum `60a5272`).
+3. **M2** scenario-001 broken + golden. **DONE** — B1–B10 in
+   `docs/M2_EVIDENCE.md`. Fault: `readinessProbe.httpGet.path` `/health` →
+   `/health2`. Broken SCORE 10 (≤ 60), golden SCORE 100, patches compose to base.
 4. Only after M1 **and** M2 pass end to end: design scenarios 002–010 (separate
-   plan revision).
+   plan revision). **Not started.**
 
 Nine remaining scenarios and the baseline/advanced agents are **not** started
 before step 4.
