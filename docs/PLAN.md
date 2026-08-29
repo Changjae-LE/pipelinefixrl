@@ -974,10 +974,27 @@ Order: **M-BE → M3 (002) → M4 (003) → M5 (004) → M6 (005) → M7 (006) �
 M8 (007) → M9 (008) → M10 (009) → M11 (010)**. One milestone at a time, in this
 order; none started before this matrix is approved.
 
+**Progress (updated 2026-08-29):**
+- **M-BE ✅ complete** — commits `7f8a081` (base capabilities) + `e45b97a`
+  (`fix: enforce universal image hygiene anti-cheat`). Gate passed: `A1–A14`
+  (cold `make e2e-base`, SCORE 100) + scenario-001 broken/golden/compose.
+- **M3 / scenario-002 ✅ complete** — commit `1e58242`
+  *feat: add deterministic local image pull scenario*. Broken run twice →
+  deterministic **SCORE 10** (`ErrImageNeverPull`, `imagePullPolicy: Never`,
+  no registry/network pull); golden → **SCORE 100** (only the pinned tag
+  repaired to the loaded image); compose-check byte-identical; anti-cheat clean.
+  Full regression gate re-run 2026-08-29 against the committed harness:
+  scenario-001 (broken 10 / golden 100 / compose) **and** scenario-002
+  (broken ×2 = 10 / golden 100 / compose) all PASS; scoped namespace cleanup +
+  `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
+  containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
+  `~/.kube/config` unchanged.
+- **Next: M4 / scenario-003 — not started.**
+
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
-| M-BE | base-evolution | **yes (only here)** | — (its own gate: A1–A14 + 001) | ~8 min | ~10 min (build+tests) |
-| M3 | 002 wrong pinned tag | no | A1–A14 + 001 | ~8 | ~3 |
+| M-BE ✅ | base-evolution | **yes (only here)** | — (its own gate: A1–A14 + 001) | ~8 min | ~10 min (build+tests) |
+| M3 ✅ | 002 wrong pinned tag | no | A1–A14 + 001 | ~8 | ~3 |
 | M4 | 003 OOMKilled | no | + 002 | ~11 | ~4 |
 | M5 | 004 template wiring | no | + 003 | ~15 | ~3.5 |
 | M6 | 005 Service selector | no | + 004 | ~18 | ~3 |
