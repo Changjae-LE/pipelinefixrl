@@ -132,6 +132,26 @@ def _anticheat(tree: pathlib.Path) -> list[str]:
     return viol
 
 
+def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -> list[str]:
+    """Scenario-declared anti-cheat rules (additive to _anticheat / §7.2).
+
+    Read from scenario.yaml `evaluation.anticheat`. Supported rule keys:
+      tag_override_loaded_or_empty: true
+          image.tagOverride must be "" or one of the tags the runner loaded.
+    """
+    rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
+    viol: list[str] = []
+    tv = yaml.safe_load((tree / "charts" / "app" / "values.yaml").read_text(encoding="utf-8"))
+
+    if rules.get("tag_override_loaded_or_empty"):
+        override = ((tv.get("image") or {}).get("tagOverride")) or ""
+        if override and override not in loaded_tags:
+            viol.append(
+                f"image.tagOverride {override!r} is neither empty nor a loaded tag {loaded_tags}"
+            )
+    return viol
+
+
 def _read_all(run_dir: pathlib.Path, *names: str) -> str:
     blob = ""
     for name in names:
@@ -256,15 +276,20 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True):
     for p in patch_seq:
         _apply_patch(tree, p)
 
+    ev = cfg.get("evaluation", {}) or {}
+    timeout = int(ev.get("deploy_timeout_seconds", VERSIONS.get("DEPLOY_TIMEOUT_SECONDS", "120")))
+    tag = image_tag(f"{scenario_id}-{variant}", ts)
+
+    # Anti-cheat: base §7.2 rules always; scenario-declared rules only for a
+    # candidate fix (golden / agent submission), never against the broken
+    # reference which is the injected fault, not a shortcut.
     violations = _anticheat(tree)
+    if variant == "golden":
+        violations += _scenario_anticheat(cfg, tree, loaded_tags=[tag])
     (run_dir / "anticheat.json").write_text(
         json.dumps(violations, indent=2), encoding="utf-8"
     )
 
-    ev = cfg.get("evaluation", {}) or {}
-    timeout = int(ev.get("deploy_timeout_seconds", VERSIONS.get("DEPLOY_TIMEOUT_SECONDS", "120")))
-
-    tag = image_tag(f"{scenario_id}-{variant}", ts)
     meta = {
         "run_id": run_id,
         "scenario": scenario_id,
@@ -276,6 +301,11 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True):
         "deploy_timeout_seconds": timeout,
         "patches_applied": [p.name for p in patch_seq],
         "anticheat_violations": violations,
+        "loaded_tags": [tag],
+        # activate scenario-specific scored checks + weight reallocation
+        # (harness/evaluate.py registry hook; empty for base app / scenario-001).
+        "scenario_checks": list(ev.get("checks") or []),
+        "weight_overrides": dict(ev.get("weights") or {}),
     }
 
     # Build path with a build-failure branch (fully exercised by scenario-010):

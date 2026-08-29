@@ -1,0 +1,5 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -8 +8 @@
+-  tagOverride: "v0.0.0-not-loaded"
++  tagOverride: ""

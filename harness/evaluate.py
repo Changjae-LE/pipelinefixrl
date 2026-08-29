@@ -56,6 +56,32 @@ def _load(run_dir: pathlib.Path, name: str):
         return {}
 
 
+_IMAGE_PROBLEM_REASONS = {
+    "ErrImageNeverPull",
+    "ImagePullBackOff",
+    "ErrImagePull",
+    "InvalidImageName",
+}
+
+
+@register_scenario_check("image_pull_ok", 15)
+def _image_pull_ok(*, run_dir, namespace, release, meta):
+    """PASS iff no container is stuck in an image-acquisition waiting state.
+    Owning scenario: scenario-002 (produces ErrImageNeverPull)."""
+    pods = _load(run_dir, "pods.json")
+    items = pods.get("items", []) if isinstance(pods, dict) else []
+    hits = []
+    for p in items:
+        st = p.get("status") or {}
+        for cs in (st.get("containerStatuses") or []) + (st.get("initContainerStatuses") or []):
+            reason = ((cs.get("state") or {}).get("waiting") or {}).get("reason")
+            if reason in _IMAGE_PROBLEM_REASONS:
+                hits.append(f"{cs.get('name')}: {reason}")
+    if hits:
+        return False, "image acquisition failed — " + "; ".join(hits)
+    return True, "no image-acquisition waiting states"
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

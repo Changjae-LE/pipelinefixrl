@@ -1,0 +1,71 @@
+id: scenario-002
+title: Wrong pinned image tag (Never policy)
+category: docker/image-distribution
+difficulty: easy
+description: >
+  charts/app/values.yaml image.tagOverride is pinned to a tag that was never
+  built or loaded into kind. The deployment template renders
+  {{ .Values.image.tagOverride | default .Values.image.tag }}, so the pod is
+  told to run pipelinefixrl/app:v0.0.0-not-loaded. With imagePullPolicy: Never
+  the kubelet may not fetch it and the image is absent from the node's
+  containerd store, so the pod is stuck Pending with ErrImageNeverPull. No
+  registry and no network are involved: the pipeline already built and
+  `kind load`-ed the correct unique tag and passed it via --set image.tag.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-scenario-002
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 45
+  restart_threshold: 0
+
+  # activate the scenario-specific scored check and reallocate backbone weight
+  # so the total is still 100 (helm 10 / rollout 15 / deployment_ready 15 /
+  # pods_ready 10 / endpoints 15 / http 20 / image_pull_ok 15).
+  checks: [image_pull_ok]
+  weights:
+    rollout_complete: 15
+    deployment_ready: 15
+    pods_ready: 10
+    image_pull_ok: 15
+
+  # additive to the base anti-cheat (PROJECT_SPEC 7.2). The base rules already
+  # forbid image.pullPolicy other than Never/IfNotPresent and a changed
+  # image.repository; scenario-002 additionally requires that any image.tagOverride
+  # left in place is either empty or a tag the runner recorded as loaded.
+  anticheat:
+    tag_override_loaded_or_empty: true
+
+  expect:
+    broken:
+      score_max: 10
+      must_pass: [helm_release_ok]
+      must_fail:
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - image_pull_ok
+      evidence:
+        events_contains:
+          - "ErrImageNeverPull"
+          - "pull policy of Never"
+        pods_json_contains:
+          - "ErrImageNeverPull"
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - image_pull_ok
+      anticheat_clean: true
