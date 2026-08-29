@@ -268,7 +268,9 @@ A scenario solution is scored **0 / FAIL** regardless of check results if any of
 - Replica count was set to 0.
 
 Anti-cheat is a diff-based check between the submitted tree and the base tree.
-For M2 the golden patch is verified to not trip anti-cheat.
+For M2 the golden patch is verified to not trip anti-cheat. Scenarios 002–010
+each add scenario-specific anti-cheat rules on top of this base set (see
+`PLAN.md` §11.1 and the per-scenario blocks in §11.5).
 
 ### 7.3 Scenario definition schema (`scenario.yaml`)
 
@@ -297,6 +299,26 @@ evaluation:
       score_min: 100           # golden must score exactly this
       must_pass: [helm_release_ok, rollout_complete, deployment_ready, pods_ready, endpoints_present, http_health_ok]
 ```
+
+Scenarios 002–010 extend this schema with optional `expect.<variant>.evidence`
+substring lists (scanned against `events.*`, `logs/*.log`, `pods.json`,
+`build.log`, `ci.log`) and `expect.golden.anticheat_clean: true`, exactly as
+already implemented for scenario-001 in M2.
+
+### 7.4 Additional deterministic checks (M3+, planned)
+
+The M1/M2 check set in §7.1 is the *functional backbone*. Scenarios 002–010
+introduce further deterministic checks — `image_pull_ok`, `no_oomkill`,
+`service_selects_pods`, `runs_as_nonroot`, `readonly_rootfs`,
+`no_priv_escalation`, `caps_dropped`, `config_applied`, `structured_logs_ok`,
+`ci_gate_pass`, `image_build_ok`, `git_tree_resolved`. Each is a pure function
+of collected artifacts (`pods.json`, `services.json`, `endpointslices.json`,
+`rollout.json`, `logs/*.log`, `build.log`, `ci.log`, the variant `tree/`),
+carries a weight taken from the backbone so every scenario still totals 100, and
+uses no LLM. Definitions, PASS conditions, and owning scenarios are in
+`PLAN.md` §11.3. Each is **append-only** (`harness/evaluate.py`) and lands with
+its owning scenario milestone; the shared base capabilities they depend on land
+first in milestone M-BE (`PLAN.md` §11.7). All **planned, not implemented**.
 
 ---
 
@@ -335,7 +357,7 @@ evaluation:
 ## 9. Scenario-001 (Milestone 2)
 
 - **Fault**: `break.patch` changes `charts/app/values.yaml`
-  `readinessProbe.httpGet.path` from `/health` to `/healthz` (a path the app does
+  `readinessProbe.httpGet.path` from `/health` to `/health2` (a path the app does
   not serve → 404 → readiness never succeeds → pod never Ready → Service has no
   endpoints → `http_health_ok` unreachable via the Service).
 - **Golden**: `golden.patch` sets the path back to `/health`. Nothing else
@@ -349,7 +371,11 @@ evaluation:
 
 ## 10. Out of scope for M1 + M2
 
-- Scenarios 002–010.
+- Scenarios 002–010 — **designed** in `PLAN.md` §11 (matrix + per-scenario
+  specs + planned checks), **not implemented**. Ship as one base-evolution
+  prerequisite milestone **M-BE** (§11.7 — the only change to the deployable
+  base) followed by **M3…M11**, one at a time in number order, after the §11
+  matrix is approved.
 - Baseline agent and advanced agent implementations (schema reserved, not built).
 - Multi-node clusters, Ingress, service mesh, network policies.
 - CI running on GitHub Actions (local `make` only for now).

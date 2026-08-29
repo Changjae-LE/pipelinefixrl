@@ -310,6 +310,8 @@ before step 4.
 | `readOnlyRootFilesystem` breaks uvicorn/tmp writes                | `emptyDir` volume mounted at `/tmp`; verified in M1. |
 | Windows path / line-ending issues in bash scripts + patches       | `.gitattributes` forcing `LF` for `scripts/**`, `*.patch`, `*.sh`. |
 | `kubectl run` probe pod can't resolve Service DNS immediately     | Retry with backoff; `port-forward` fallback path in `http_health_ok`. |
+| kind's default CNI (`kindnetd`) does **not** enforce `NetworkPolicy` | No planned scenario relies on NetworkPolicy enforcement. Networking faults (scenario-005) use Service wiring, not policy. A future policy scenario would need a CNI swap and is explicitly out of scope. |
+| Degraded-but-serving faults (security 006, networking 005, observability 008, CI 009) score higher than a dead pod | Grading principle in §11.1: per-scenario `score_max` is set strictly below the weakest legitimate partial fix; `must_fail` lists pin the diagnostic. |
 
 ## 9. Decisions (resolved 2026-08-28)
 
@@ -323,7 +325,667 @@ before step 4.
    `bash scripts/*.sh` via Git Bash. No PowerShell wrapper unless `winget` make
    proves unreliable.
 
-## 10. Approval gate
+## 10. Approval gates (status)
 
-Implementation of M0/M1 has **not** started. Awaiting explicit "approved / start"
-before creating any application, chart, script, or harness code.
+- **M0 / M1** — approved and complete (commits `67c767f`, `e112ede`, `60a5272`;
+  evidence `docs/M1_EVIDENCE.md`).
+- **M2 / scenario-001** — approved and complete (commit `62b74ad`; evidence
+  `docs/M2_EVIDENCE.md`).
+- **M-BE (base-evolution)** — planned in §11.7. **Not implemented.** The one
+  milestone that changes the deployable base; lands after M2, before M3.
+- **scenario-002 … scenario-010** — planned in §11 below (M3…M11). **Not
+  implemented.** Awaiting explicit review/approval of the §11 matrix before any
+  M-BE change, scenario file, harness check, or Makefile target is created.
+
+---
+
+## 11. Scenario roadmap — scenario-002 … scenario-010 (PLANNED, not implemented)
+
+scenario-001 is frozen. This section is design-only: no code, no patches, no
+harness changes are produced until the matrix in §11.2 is approved. Work ships
+as one prerequisite milestone **M-BE** (base-evolution, §11.7) followed by
+**M3 = scenario-002 … M11 = scenario-010**, built and demonstrated one at a
+time, in number order, never in parallel.
+
+### 11.1 Design principles
+
+1. **Deterministic, offline, kind-only.** One control-plane node, one replica,
+   base resource budget (`50m`/`64Mi` requests, `250m`/`128Mi` limits) unless a
+   scenario is explicitly about resources. No registry pulls, no LoadBalancer,
+   no PersistentVolume, no second node, no cloud. Every failure reproduces with
+   the host network unplugged.
+2. **One fault, one domain.** Each scenario injects exactly one root cause that
+   foregrounds a different DevOps discipline. `break.patch` is the smallest diff
+   that produces it; `golden.patch` is the smallest diff that removes it, and
+   `break.patch` + `golden.patch` applied to the base tree is byte-identical to
+   base (same B6 rule as scenario-001).
+3. **Grading always sums to 100.** The functional backbone — `helm_release_ok`,
+   `rollout_complete`, `deployment_ready`, `pods_ready`, `endpoints_present`,
+   `http_health_ok` — is reused. A scenario may reallocate up to ~45 of those
+   points to one or more domain-specific checks (§11.3). `no_bad_events` stays
+   weight 0 (report-only).
+4. **Broken threshold is calibrated, not fixed at 60.** A total outage lands
+   `≤ 10`; a degraded-but-serving fault (security posture 006, Service wiring
+   005, log-schema 008, CI contract 009) lands higher but strictly below the
+   weakest legitimate partial fix, with a `must_fail` list that pins the specific
+   diagnostic. Golden is always exactly `100`.
+7. **Shared base frozen after M-BE.** All base capabilities scenarios 002–010
+   need land in one prerequisite milestone (§11.6–§11.7); from M3 on, a scenario
+   adds only its `harness/scenarios/<id>/` files and append-only checks.
+5. **Anti-cheat is per scenario and additive to §7.2.** Every scenario keeps the
+   base rules (probes present, `securityContext` `runAsNonRoot` /
+   `allowPrivilegeEscalation` / `readOnlyRootFilesystem` intact, no `tests/**`
+   byte change, `replicaCount ≥ 1`, no `:latest`) and adds rules that block the
+   scenario's specific shortcut (e.g. "don't hardcode the image tag", "don't
+   delete the resource limits", "don't edit the failing test").
+6. **CLI-first diagnosis.** Each scenario names the exact `kubectl` / `helm` /
+   `docker` / `git` commands that reveal the root cause, and the evidence
+   substrings the harness scans for in `events.*`, `logs/*.log`, `pods.json`,
+   and (new) `build.log` / `ci.log`.
+
+### 11.2 Proposed scenario matrix
+
+| # | Title | Primary domain | Secondary | Injected fault | `break.patch` target | App serving while broken? | Broken `score_max` | Golden | New checks | Difficulty |
+|---|-------|----------------|-----------|----------------|----------------------|---------------------------|-------------------:|-------:|------------|------------|
+| 001 | Incorrect readiness probe path | Kubernetes probes | config, debugging | readiness `httpGet.path` `/health`→`/health2` → 404, never Ready | `charts/app/values.yaml` (1 line) | no | 60 (actual 10) | 100 | — | **intro** |
+| 002 | Wrong pinned image tag (`Never` policy) | Docker / image distribution | Helm values | `image.tagOverride` set to a tag that was never `kind load`ed; `pullPolicy: Never` forbids fetching it → `ErrImageNeverPull` | `charts/app/values.yaml` (1 line) | no | 10 | 100 | `image_pull_ok` | easy |
+| 003 | OOMKilled crash loop | Runtime resources | Kubernetes, debugging | `resources.requests/limits.memory`→`16Mi` → OOMKill on startup, `CrashLoopBackOff` | `charts/app/values.yaml` (2 lines) | no (flapping) | 10 | 100 | `no_oomkill` | easy–medium |
+| 004 | Helm value not wired to template | Helm templating | config | `deployment.yaml` image ref points at `.Values.image.version` (undefined) → empty tag → `InvalidImageName` | `charts/app/templates/deployment.yaml` (1 line) | no | 10 | 100 | — (reuses functional) | medium |
+| 005 | Service selects no pods | Networking | Kubernetes Service | `service.yaml` `selector` hardcoded to a non-matching label set → 0 endpoints | `charts/app/templates/service.yaml` (1 hunk) | yes | 55 | 100 | `service_selects_pods` | medium |
+| 006 | Container runs as root | Security | Pod Security | `securityContext` weakened: `runAsNonRoot:false`, `runAsUser:0`, `readOnlyRootFilesystem:false`, `allowPrivilegeEscalation:true` | `charts/app/values.yaml` (4–5 lines) | yes | 55 | 100 | `runs_as_nonroot`, `readonly_rootfs`, `no_priv_escalation`, `caps_dropped` | medium |
+| 007 | Misconfigured ConfigMap reference | Configuration | Kubernetes ConfigMap | `config.key` `tier`→`teir` → `configMapKeyRef` miss → `CreateContainerConfigError` | `charts/app/values.yaml` (1 line) | no | 10 | 100 | `config_applied` | medium |
+| 008 | Structured-log format regression | Observability | debugging | `logFormat` `json`→`plain`; service stays 100% healthy but stdout is no longer machine-parseable → log-schema / access-log checks fail | `charts/app/values.yaml` (1 line) | **yes (fully healthy)** | 65 | 100 | `structured_logs_ok` | medium |
+| 009 | CI gate + health contract regression | CI/CD | Git, testing | `app/main.py` `/health` body `{"status":"ok"}`→`{"status":"healthy"}` → `make ci` (pytest) red, `http_health_ok` red, pod still Ready | `app/main.py` (1 line) | yes | 50 | 100 | `ci_gate_pass` | medium–hard |
+| 010 | Unresolved merge conflict | Git | Docker / build | conflict markers injected into `requirements.txt` → `pip install` → `docker build` fails, nothing deploys | `requirements.txt` (~5 lines) | no build | 10 | 100 | `image_build_ok`, `git_tree_resolved` | medium |
+
+Domain coverage across 001–010: **Kubernetes** 001/003/005/007/008 · **Helm**
+002/004 · **Docker** 002/003/010 · **Git** 009/010 · **CI/CD** 009 ·
+**configuration** 001/004/007 · **networking** 005 · **security** 006 ·
+**observability** 008 · **debugging** every scenario (esp. 003/008/009/010). No
+scenario uses AWS, EKS, ECR, IAM, or any external cloud resource.
+
+### 11.3 Additional deterministic checks introduced (M3+)
+
+All are pure functions of collected artifacts; none use an LLM. Added to
+`harness/evaluate.py` when the owning scenario is built; weights are taken out of
+the functional backbone so each scenario still totals 100.
+
+| Check | Owning scenario(s) | PASS condition | Source artifact |
+|-------|--------------------|----------------|-----------------|
+| `image_pull_ok` | 002 | no container `state.waiting.reason` in {`ErrImageNeverPull`,`ImagePullBackOff`,`ErrImagePull`,`InvalidImageName`} (scenario-002 produces `ErrImageNeverPull` specifically) | `pods.json` |
+| `no_oomkill` | 003 | no container `lastState.terminated.reason == OOMKilled`; total `restartCount ≤ threshold` | `pods.json` |
+| `structured_logs_ok` | 008 | ≥ 95 % of non-blank stdout lines parse as JSON objects; every parsed object has keys `{ts, level, msg}`; ≥ 1 object is an HTTP access record with `{method, path, status}` and `status` 2xx for a synthetic `GET /health` through the Service | `logs/*.log` + live HTTP |
+| `service_selects_pods` | 005 | Service `.spec.selector` is non-empty **and** equals the Deployment `.spec.selector.matchLabels`; ≥1 EndpointSlice endpoint `targetRef` resolves to a Ready pod of that Deployment | `services.json`, `rollout.json`, `endpointslices.json`, `pods.json` |
+| `runs_as_nonroot` | 006 | applied container `securityContext.runAsNonRoot == true` **and** `runAsUser >= 1000` | `pods.json` |
+| `readonly_rootfs` | 006 | applied container `securityContext.readOnlyRootFilesystem == true` | `pods.json` |
+| `no_priv_escalation` | 006 | applied container `securityContext.allowPrivilegeEscalation == false` | `pods.json` |
+| `caps_dropped` | 006 | applied container `securityContext.capabilities.drop` contains `ALL`; `add` is empty/absent | `pods.json` |
+| `config_applied` | 007 | `GET /` through the Service returns 200 with the config-sourced field (`tier`) equal to the ConfigMap's value; ConfigMap volume/`valueFrom` still present in the rendered manifest | live HTTP + `rollout.json` |
+| `ci_gate_pass` | 009 | `scripts/ci.sh` on the submitted tree exits 0 — runs `pytest -q`, `helm lint charts/app`, `docker build`, and a `:latest`/pin-policy grep | `ci.log` |
+| `image_build_ok` | 010 | `docker build` for the variant tree exits 0 | `build.log` |
+| `git_tree_resolved` | 010 | no tracked file contains a conflict marker line (`^<<<<<<< `, `^=======$`, `^>>>>>>> `) | variant `tree/` |
+
+### 11.4 Harness / check additions (by scenario, appended when that scenario is built)
+
+**All shared-base changes are consolidated into milestone M-BE (§11.7) and land
+before scenario-002.** After M-BE the deployable base — `app/`, `charts/app/`,
+`docker/`, `requirements.txt`, `scripts/`, and every existing `Makefile` recipe —
+is **frozen**; no scenario milestone (M3–M11) may modify it. Each scenario
+milestone adds only: its four files under `harness/scenarios/<id>/`, one or more
+**append-only** pure-function checks in `harness/evaluate.py`, and (already
+declared in M-BE) its Make targets.
+
+| Scenario | Scenario-local addition |
+|----------|------------------------|
+| 002 | `image_pull_ok` check (reads `pods.json`). Relies on M-BE's `image.tagOverride` chart knob. |
+| 003 | `no_oomkill` check (reads `pods.json`). |
+| 004 | anti-cheat helper to grep chart templates (`.Values.image.tag` referenced; no literal tag). |
+| 005 | `service_selects_pods` check (structural selector compare). |
+| 006 | `runs_as_nonroot`, `readonly_rootfs`, `no_priv_escalation`, `caps_dropped` checks (read applied `pods.json`). |
+| 007 | `config_applied` check (live HTTP + rendered manifest). Relies on M-BE's `app-config` ConfigMap + `configMapKeyRef` + `/`-echoes-`tier`. |
+| 008 | `structured_logs_ok` check (parses `logs/*.log` + one synthetic request). Relies on M-BE's `logFormat` config + JSON logging formatter. |
+| 009 | `ci_gate_pass` check (runs M-BE's `scripts/ci.sh`). Relies on M-BE's `make ci`. |
+| 010 | `image_build_ok`, `git_tree_resolved` checks; the "build failed → score from those two, skip deploy" runner path (added in M-BE as a harness generalisation, exercised first here). |
+
+### 11.5 Per-scenario specifications
+
+Each block gives the twelve required items: failure mode · initial broken state
+& user task · CLI investigation workflow · expected symptoms & diagnostic
+evidence · `break.patch` scope · minimal `golden.patch` · deterministic weighted
+checks · broken threshold & golden 100 · anti-cheat rules · runtime/resource
+budget · difficulty & why it differs from scenario-001.
+
+---
+
+#### scenario-002 — Wrong pinned image tag (`Never` policy)
+
+- **No network or public registry anywhere.** The scenario runner builds and
+  `kind load docker-image`s the correct uniquely-tagged image
+  (`pipelinefixrl/app:scenario-002-broken-<sha>-<ts>`) exactly as for every other
+  scenario, and deploys with `--set image.tag=<that>`. The fault is that the
+  chart is told to use a *different, un-loaded* tag.
+- **Failure mode.** `charts/app/values.yaml` `image.tagOverride` (an M-BE chart
+  knob; empty by default; the deployment template renders
+  `{{ .Values.image.tagOverride | default .Values.image.tag }}`) is set to a tag
+  that was never built or loaded (e.g. `v0.0.0-not-loaded`). With
+  `imagePullPolicy: Never`, the kubelet is forbidden from fetching it and the
+  image is absent from the node's containerd store → **`ErrImageNeverPull`**,
+  pod stuck `Pending`, `0/1`.
+- **Initial broken state & task.** Release installs; Deployment created; pod
+  `Pending` / `ErrImageNeverPull`. Task: make the deployment use the image the
+  pipeline actually built and loaded — no registry, no `pullPolicy` change.
+- **CLI workflow.** `kubectl get pods` (`ErrImageNeverPull`) →
+  `kubectl describe pod <p> -n <ns>` (`Container image
+  "pipelinefixrl/app:v0.0.0-not-loaded" is not present with pull policy of
+  Never`) → `helm get manifest app -n <ns> | grep image:` (the rendered tag is
+  the override, not the `--set` tag) → `helm get values app -n <ns>` (spot
+  `tagOverride: v0.0.0-not-loaded`) →
+  `docker exec pipelinefixrl-control-plane crictl images` (only the
+  pipeline-built tag is present) → clear the override.
+- **Symptoms & evidence.** `pods.json`:
+  `containerStatuses[].state.waiting.reason == ErrImageNeverPull`. `events.*`:
+  reason `Failed`, message `… is not present with pull policy of Never`.
+  Evidence scan: `events_contains: ["ErrImageNeverPull", "pull policy of Never"]`,
+  `pods_json_contains: ["ErrImageNeverPull"]`.
+- **`break.patch` scope.** One line in `charts/app/values.yaml`:
+  `tagOverride: ""` → `tagOverride: "v0.0.0-not-loaded"`.
+- **Minimal `golden.patch`.** One line: `tagOverride: "v0.0.0-not-loaded"` →
+  `tagOverride: ""`.
+- **Weighted checks.** helm 10 / rollout 15 / deployment_ready 15 / pods_ready
+  10 / endpoints 15 / http 20 / `image_pull_ok` 15 = 100. Broken: only
+  `helm_release_ok` PASS → **score 10**.
+- **Thresholds.** Broken `score_max: 10`; golden `score_min: 100`.
+  `must_fail: [rollout_complete, deployment_ready, pods_ready, endpoints_present,
+  http_health_ok, image_pull_ok]`.
+- **Anti-cheat.** `image.tagOverride` is empty **or** equal to a tag the runner
+  recorded as loaded into the node (`meta.json`); `image.pullPolicy` ∈
+  {`Never`,`IfNotPresent`} — **the fix may not switch to `Always`**;
+  `image.repository` unchanged; no `imagePullSecrets` / registry / init-container
+  / sidecar; base §7.2 rules.
+- **Budget.** `deploy_timeout` 45 s; `ErrImageNeverPull` is immediate (no pull
+  backoff); wall time ≤ 3 min; 1 pod, base resources; zero network.
+- **Difficulty: easy.** Same "one wrong value in `values.yaml`" shape as
+  scenario-001, in the image-distribution domain. Distinct from scenario-004:
+  004 renders an *empty* tag from an undefined template value → `InvalidImageName`
+  (a Helm templating bug); 002 renders a *non-empty but un-loaded* tag under a
+  `Never` policy → `ErrImageNeverPull` (a `kind load` / pinned-tag contract
+  break). Different `waiting.reason`, different fix (clear an override vs repair a
+  template reference).
+
+---
+
+#### scenario-003 — OOMKilled crash loop
+
+- **Failure mode.** `resources.requests.memory` and `resources.limits.memory` are
+  both set to `16Mi`. The Python/uvicorn process exceeds the cgroup limit during
+  import and is OOM-killed (exit 137) on every start → `CrashLoopBackOff`,
+  `RESTARTS` climbing. (Setting both keeps the manifest valid: `requests ≤
+  limits`.)
+- **Initial broken state & task.** Deployment created; pod cycles
+  `ContainerCreating`→`Running`→`OOMKilled`→`CrashLoopBackOff`; `RESTARTS ≥ 2`;
+  `0/1` ready. Task: reach a stable Ready pod with `0` restarts **without
+  removing resource governance**.
+- **CLI workflow.** `kubectl get pods -w` (RESTARTS climbing) →
+  `kubectl describe pod <p> -n <ns>` (`Last State: Terminated`, `Reason:
+  OOMKilled`, `Exit Code: 137`) → `kubectl logs <p> -n <ns> --previous`
+  (startup truncated) → `helm get values app -n <ns>` (`limits.memory: 16Mi`) →
+  compare against a known-good size.
+- **Symptoms & evidence.** `pods.json`:
+  `containerStatuses[].lastState.terminated.reason == OOMKilled`, `exitCode ==
+  137`, `restartCount ≥ 2`. `events.*`: `BackOff` "Back-off restarting failed
+  container". Evidence scan: `pods_json_contains: ["OOMKilled","137"]`,
+  `events_contains: ["BackOff"]`.
+- **`break.patch` scope.** Two lines in `charts/app/values.yaml`:
+  `requests.memory` and `limits.memory` → `16Mi`.
+- **Minimal `golden.patch`.** Two lines: `requests.memory: 64Mi`,
+  `limits.memory: 128Mi` (restores the base values exactly).
+- **Weighted checks.** helm 10 / rollout 15 / deployment_ready 15 / pods_ready
+  15 / endpoints 15 / http 20 / `no_oomkill` 10 = 100. Broken: only
+  `helm_release_ok` PASS → **score 10**.
+- **Thresholds.** Broken `score_max: 10`; golden `score_min: 100`
+  (`restart_threshold: 0`).
+- **Anti-cheat.** `resources.requests` and `resources.limits` blocks present and
+  non-empty; `limits.memory ≥ 64Mi`; `requests.memory ≥ 32Mi`; neither block
+  deleted; base §7.2 rules. Blocks the "delete the limits" shortcut.
+- **Budget.** `deploy_timeout` 60 s; ~3 restart cycles in 60–90 s; wall time
+  ≤ 3 min; transient memory footprint tiny.
+- **Difficulty: easy–medium.** Removes scenario-001's "the current logs show it"
+  crutch: the signal lives in `--previous` logs and pod `lastState`. The fix is
+  a sizing judgement bounded by anti-cheat (cannot just remove the limit), so the
+  learner has to choose a value that actually works.
+
+---
+
+#### scenario-004 — Helm value not wired to the template
+
+- **Failure mode.** `charts/app/templates/deployment.yaml` is edited so the
+  container image reference reads `{{ .Values.image.version }}` (a key that does
+  not exist) instead of `{{ required "…" .Values.image.tag }}`. Helm renders the
+  missing value as empty, so the manifest carries `image:
+  "pipelinefixrl/app:"` → the kubelet rejects it with `InvalidImageName`.
+- **Initial broken state & task.** `helm upgrade --install` **succeeds** (Helm
+  does not validate image refs); Deployment created; pod `Pending` with
+  `InvalidImageName`, `0/1`. Task: make the deploy use the tag supplied via
+  `--set image.tag=<unique>` — fix the chart, do not hardcode a tag.
+- **CLI workflow.** `helm get manifest app -n <ns> | grep image:` (see the empty
+  tag) → `helm get values app -n <ns>` (`image.tag` **is** set) →
+  `kubectl describe pod` (`InvalidImageName` / `couldn't parse image
+  reference`) → inspect `charts/app/templates/deployment.yaml` → spot the wrong
+  value path.
+- **Symptoms & evidence.** Rendered manifest image ends with `:` (empty tag);
+  `pods.json` `state.waiting.reason == InvalidImageName`; `events.*` reason
+  `Failed` / `InvalidImageName`. Evidence scan: `events_contains:
+  ["InvalidImageName"]`, `manifest_contains: ["pipelinefixrl/app:\""]`.
+- **`break.patch` scope.** One line in `charts/app/templates/deployment.yaml`:
+  the `image:` expression.
+- **Minimal `golden.patch`.** One line: restore `{{ required "image.tag is
+  required and must not be 'latest'" .Values.image.tag }}`.
+- **Weighted checks.** Functional backbone reused as-is (helm 10 / rollout 20 /
+  deployment_ready 20 / pods_ready 15 / endpoints 15 / http 20). Broken: only
+  `helm_release_ok` PASS → **score 10**.
+- **Thresholds.** Broken `score_max: 10`; golden `score_min: 100`.
+- **Anti-cheat.** `templates/deployment.yaml` still references
+  `.Values.image.tag`; no literal tag hardcoded (`grep -E ':(latest|v?[0-9])'`
+  fails); the `required`/non-empty guard on the tag is present; `image.repository`
+  from values unchanged; probe / `securityContext` blocks in the template
+  unchanged; base §7.2 rules.
+- **Budget.** `deploy_timeout` 45 s; `InvalidImageName` is immediate; wall time
+  ≤ 2 min.
+- **Difficulty: medium.** First scenario whose bug is in a **template**, not
+  `values.yaml`. Requires `helm get manifest` to see rendered output and the
+  discipline to distinguish "value supplied" from "value referenced". Anti-cheat
+  forbids the tempting "just hardcode the tag" fix.
+
+---
+
+#### scenario-005 — Service selects no pods
+
+- **Failure mode.** `charts/app/templates/service.yaml` `selector:` is replaced
+  with a hardcoded label set (`app.kubernetes.io/name: web`) that does not match
+  the Deployment's pod labels. The pod is healthy and Ready, but the Service has
+  **no endpoints**, so nothing routes to it.
+- **Initial broken state & task.** Rollout completes; `deployment_ready` and
+  `pods_ready` PASS; `kubectl get endpoints app` is empty; `GET /health` through
+  the Service hangs / refuses. Task: restore Service→pod routing without
+  touching the Deployment's labels.
+- **CLI workflow.** `kubectl get endpoints app -n <ns>` (none) →
+  `kubectl get endpointslices -n <ns>` (none) →
+  `kubectl get svc app -n <ns> -o jsonpath='{.spec.selector}'` vs
+  `kubectl get deploy app -n <ns> -o jsonpath='{.spec.selector.matchLabels}'`
+  (mismatch) → `kubectl get pods --show-labels -n <ns>` → inspect
+  `templates/service.yaml`.
+- **Symptoms & evidence.** `endpoints.json` `subsets` empty;
+  `endpointslices.json` `items` empty; Service selector ≠ Deployment selector.
+  `http_health_ok` FAIL "service has no ready endpoints". Evidence scan:
+  `selector_mismatch: true` (structural, in `verdict.json`).
+- **`break.patch` scope.** One hunk in `charts/app/templates/service.yaml`
+  replacing the `{{- include "app.selectorLabels" . | nindent 4 }}` line with a
+  literal non-matching block.
+- **Minimal `golden.patch`.** Restore the `include "app.selectorLabels"` line.
+- **Weighted checks.** helm 10 / rollout 15 / deployment_ready 15 / pods_ready
+  10 / endpoints 15 / http 20 / `service_selects_pods` 15 = 100. Broken:
+  `helm_release_ok`, `rollout_complete`, `deployment_ready`, `pods_ready` PASS;
+  `endpoints_present`, `http_health_ok`, `service_selects_pods` FAIL →
+  **score 50**.
+- **Thresholds.** Broken `score_max: 55`; golden `score_min: 100`.
+  `must_fail: [endpoints_present, http_health_ok, service_selects_pods]`.
+- **Anti-cheat.** Service `.spec.selector` non-empty and structurally equal to
+  the Deployment `.spec.selector.matchLabels`; Deployment selector / pod labels
+  unchanged; no second Service or `ExternalName` shim; base §7.2 rules.
+- **Budget.** `deploy_timeout` 45 s (rollout succeeds fast); `http_health_ok`
+  fails fast on "no endpoints"; wall time ≤ 2 min.
+- **Difficulty: medium.** Removes scenario-001's "the pod isn't Ready" crutch —
+  here everything workload-side is green and the learner must reason about the
+  Service→selector→EndpointSlice chain. Introduces a structural (non-HTTP)
+  grading check.
+
+---
+
+#### scenario-006 — Container runs as root
+
+- **Failure mode.** `charts/app/values.yaml` `securityContext` is weakened:
+  `runAsNonRoot: false`, `runAsUser: 0`, `readOnlyRootFilesystem: false`,
+  `allowPrivilegeEscalation: true` (and `capabilities.drop: [ALL]` removed). The
+  app still serves — root can bind `:8000`, the rootfs is writable — so every
+  functional check passes, but the runtime posture is non-compliant.
+- **Initial broken state & task.** Deployment healthy, pod Ready, `GET /health`
+  → 200. The pod runs as UID 0 with a writable rootfs and privilege escalation
+  allowed. Task: restore a hardened posture (non-root, read-only rootfs, no
+  privilege escalation, all capabilities dropped) **without breaking the app**.
+- **CLI workflow.** `kubectl get pod <p> -n <ns> -o
+  jsonpath='{.spec.containers[0].securityContext}'` →
+  `kubectl exec <p> -n <ns> -- id` (`uid=0(root)`) →
+  `kubectl exec <p> -n <ns> -- sh -c 'touch /x && echo writable'` →
+  `helm get values app -n <ns>` (weakened block) →
+  `kubectl get pod -o yaml | sed -n '/securityContext/,+8p'`.
+- **Symptoms & evidence.** `pods.json` container `securityContext`:
+  `runAsNonRoot != true` / `runAsUser == 0` / `readOnlyRootFilesystem != true` /
+  `allowPrivilegeEscalation == true`. Evidence scan is structural (`pods.json`),
+  not string-based.
+- **`break.patch` scope.** 4–5 lines in the `securityContext` block of
+  `charts/app/values.yaml`.
+- **Minimal `golden.patch`.** Restore exactly those 4–5 fields
+  (`runAsNonRoot: true`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`,
+  `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`).
+- **Weighted checks.** Functional backbone reduced to 55 (helm 10 / rollout 10 /
+  deployment_ready 10 / pods_ready 5 / endpoints 10 / http 10) + posture checks
+  45 (`runs_as_nonroot` 15 / `readonly_rootfs` 10 / `no_priv_escalation` 10 /
+  `caps_dropped` 10). Broken: functional all PASS, four posture checks FAIL →
+  **score 55**.
+- **Thresholds.** Broken `score_max: 55`; golden `score_min: 100`.
+  `must_fail: [runs_as_nonroot, readonly_rootfs, no_priv_escalation,
+  caps_dropped]`; `must_pass: [http_health_ok]` (the fix may not disable the
+  app).
+- **Anti-cheat.** Functional checks must also pass (no "secure by breaking it");
+  `podSecurityContext.seccompProfile: RuntimeDefault` retained; `runAsUser`
+  numeric and `≥ 1000`; no privileged / `SYS_ADMIN` sidecar; no `emptyDir`
+  mounted over `/` to fake read-only; base §7.2 rules.
+- **Budget.** `deploy_timeout` 60 s; app healthy so fast; two `kubectl exec`
+  calls add a few seconds; wall time ≤ 2 min.
+- **Difficulty: medium.** New failure *class*: the deployment is green but
+  non-compliant, so "is it Ready?" is not enough — the learner must inspect the
+  effective runtime security context and prove non-root. Grading introduces
+  posture checks with real weight.
+
+---
+
+#### scenario-007 — Misconfigured ConfigMap reference
+
+- **Base capability (from M-BE).** The chart already ships an `app-config`
+  ConfigMap (`tier: standard`) and a container `env` entry via
+  `valueFrom.configMapKeyRef: {name: <fullname>-config, key: {{ .Values.config.key }}}`;
+  `app/main.py` `/` echoes `tier`. No base change happens in this milestone.
+- **Failure mode.** `charts/app/values.yaml` `config.key` is changed from `tier`
+  to `teir`. The container's `configMapKeyRef` now points at a missing key →
+  kubelet cannot create the container → `CreateContainerConfigError`, pod never
+  starts.
+- **Initial broken state & task.** Release installs; Deployment created; pod
+  `CreateContainerConfigError`, `0/1`. Task: make the app start and serve its
+  configured `tier` at `/`, by correcting the reference — not by removing the
+  config dependency.
+- **CLI workflow.** `kubectl get pods` (`CreateContainerConfigError`) →
+  `kubectl describe pod <p> -n <ns>` (`couldn't find key teir in ConfigMap
+  <ns>/app-config`) → `kubectl get configmap app-config -n <ns> -o yaml`
+  (only `tier` exists) → `helm get values app -n <ns>` / inspect the chart →
+  fix the key name.
+- **Symptoms & evidence.** `pods.json` `state.waiting.reason ==
+  CreateContainerConfigError`; `events.*` message contains `couldn't find key`
+  and `app-config`. Evidence scan: `events_contains: ["CreateContainerConfigError",
+  "app-config"]`.
+- **`break.patch` scope.** One line in `charts/app/values.yaml` (`config.key`).
+- **Minimal `golden.patch`.** One line: `teir` → `tier`.
+- **Weighted checks.** helm 10 / rollout 15 / deployment_ready 15 / pods_ready
+  10 / endpoints 15 / http 20 / `config_applied` 15 = 100. Broken: only
+  `helm_release_ok` PASS → **score 10**.
+- **Thresholds.** Broken `score_max: 10`; golden `score_min: 100`.
+- **Anti-cheat.** Rendered manifest still has the `configMapKeyRef` env (config
+  not inlined / hardcoded); the `app-config` ConfigMap still templated and
+  non-empty; `app/main.py` still reads `tier` from env (grep); base §7.2 rules.
+- **Budget.** `deploy_timeout` 45 s; config error is immediate; wall time
+  ≤ 2 min.
+- **Difficulty: medium.** Requires tracing a multi-object wiring chain
+  (`values` → ConfigMap → `configMapKeyRef` → container env → app), reading a
+  `CreateContainerConfigError` that names the missing key, and resolving a
+  cross-file name correlation.
+
+---
+
+#### scenario-008 — Structured-log format regression
+
+- **Base capability (from M-BE).** The app emits structured logs controlled by
+  `LOG_FORMAT` (`json` default | `plain`): in `json` mode every stdout line is a
+  single JSON object with fixed keys `ts` (ISO-8601 UTC), `level`, `logger`,
+  `msg`, and — for HTTP access lines — `method`, `path`, `status`. Uvicorn's
+  access and error loggers are routed through the same formatter. The chart wires
+  `LOG_FORMAT` from `.Values.logFormat`.
+- **Failure mode.** `charts/app/values.yaml` `logFormat` is changed from `json`
+  to `plain`. The service is **completely healthy** — rollout completes, pod is
+  Ready with `0` restarts, endpoints present, `GET /health` → 200 — but stdout is
+  now free-text (`INFO: 10.244.0.1:… - "GET /health HTTP/1.1" 200 OK`), so
+  nothing downstream can parse it and the observability checks fail.
+- **Initial broken state & task.** Deployment green on every Kubernetes signal;
+  `kubectl logs deploy/app | jq .` errors on every line. Task: restore
+  machine-parseable structured logging **without touching the app or the logging
+  formatter** — only the configuration is wrong.
+- **CLI workflow.** `kubectl logs deploy/app -n <ns> --tail=20` (lines are
+  plain text, not JSON) → `kubectl logs deploy/app -n <ns> | jq .`
+  (`parse error: Invalid literal`) →
+  `kubectl exec deploy/app -n <ns> -- printenv LOG_FORMAT` (`plain`) →
+  `helm get values app -n <ns>` (`logFormat: plain`) → contrast with the base
+  default (`json`) → set it back.
+- **Symptoms & evidence.** `logs/*.log`: 0 lines parse as JSON;
+  `structured_logs_ok` FAIL with reason `"0/NN stdout lines are valid JSON"`.
+  All functional checks PASS (`http_health_ok`, `deployment_ready`, … green).
+  Evidence scan: `logs_contains: ['"GET /health']` (service *is* serving) plus
+  structural `logs_are_json: false` recorded in `verdict.json`.
+- **`break.patch` scope.** One line in `charts/app/values.yaml`:
+  `logFormat: json` → `logFormat: plain`.
+- **Minimal `golden.patch`.** One line: `logFormat: plain` → `logFormat: json`.
+- **Weighted checks.** Functional backbone reduced to 65 (helm 10 / rollout 10 /
+  deployment_ready 10 / pods_ready 10 / endpoints 10 / http 15) +
+  `structured_logs_ok` 35. Broken: functional all PASS, `structured_logs_ok`
+  FAIL → **score 65**.
+- **Thresholds.** Broken `score_max: 65`; golden `score_min: 100`.
+  `must_fail: [structured_logs_ok]`; `must_pass: [http_health_ok,
+  deployment_ready, pods_ready]`.
+- **Anti-cheat (scenario-specific).** `logFormat` must be exactly `json` (no
+  unrecognised value that would trigger a fallback); `app/` and the chart's
+  logging wiring are byte-identical to base-v2 (**the fix is the config value,
+  not the code**); the healthy-run stdout line count must be ≥ the base healthy
+  run's for the same request volume — i.e. `logLevel` may not be raised to
+  suppress access logs to "pass" the check; base §7.2 rules.
+- **Budget.** `deploy_timeout` 45 s (rollout succeeds fast); one synthetic
+  `GET /health` for the access-line assertion; wall time ≤ 3 min; 1 pod, base
+  resources.
+- **Difficulty: medium.** Distinct from scenario-001 in the opposite direction
+  from 006: the deployment is **100 % functionally healthy** — every Kubernetes
+  status says "fine" — so the learner cannot lean on readiness/rollout/endpoint
+  state at all. They must compare *log output against an expected schema* and
+  trace it to a single config value. Introduces log-schema validation as a
+  grading check.
+
+---
+
+#### scenario-009 — CI gate + health-contract regression
+
+- **Base capability (from M-BE).** `scripts/ci.sh` (runs `pytest -q`,
+  `helm lint charts/app`, `helm template` smoke, `docker build`, and a `:latest`
+  / unpinned-base-image grep) and a `make ci` target already exist. No base
+  change happens in this milestone; the `break.patch` mutates only the ephemeral
+  tree copy.
+- **Failure mode.** `app/main.py` `/health` is changed to return `{"status":
+  "healthy"}` instead of `{"status": "ok"}`. The readiness probe only checks the
+  status code, so the pod still goes Ready — but `pytest`
+  (`test_health_returns_ok`) fails, `make ci` goes red, and the harness's
+  `http_health_ok` (which asserts the exact body) fails.
+- **Initial broken state & task.** `make ci` fails at `pytest` (`1 failed`); if
+  deployed anyway, `http_health_ok` FAIL and everything else green. Task: make
+  the CI gate green **without weakening the tests**, then deploy to score 100.
+- **CLI workflow.** `make ci` (read the pytest assertion diff
+  `{'status': 'healthy'} == {'status': 'ok'}`) →
+  `git diff <base>..HEAD -- app/main.py` / `git show` (locate the change) →
+  fix `app/main.py` → `make ci` again → deploy.
+- **Symptoms & evidence.** `ci.log` contains `FAILED
+  tests/test_health.py::test_health_returns_ok`; `checks.json` `http_health_ok
+  FAIL` with body `{"status": "healthy"}`. Evidence scan: `ci_log_contains:
+  ["FAILED","test_health_returns_ok"]`.
+- **`break.patch` scope.** One line in `app/main.py` (the `/health` return
+  body).
+- **Minimal `golden.patch`.** One line: `{"status": "healthy"}` → `{"status":
+  "ok"}`.
+- **Weighted checks.** Functional 70 (helm 10 / rollout 10 / deployment_ready 10
+  / pods_ready 10 / endpoints 10 / http 20) + `ci_gate_pass` 30. Broken:
+  `ci_gate_pass` FAIL (30) + `http_health_ok` FAIL (20); rest PASS →
+  **score 50**.
+- **Thresholds.** Broken `score_max: 50`; golden `score_min: 100`.
+  `must_fail: [ci_gate_pass, http_health_ok]`.
+- **Anti-cheat.** **No file under `tests/` modified** (cannot fix CI by editing
+  the test); `pytest` still collects ≥ 6 tests (base-v2 count); `helm lint`
+  clean; no `:latest` anywhere; `Chart.yaml` `version` valid semver; `/health`
+  handler returns JSON `{"status":"ok"}` (grep) and the app imports; base §7.2
+  rules.
+- **Budget.** `make ci` ~30–60 s (pytest + lint + cache-warm docker build);
+  `deploy_timeout` 60 s; wall time ≤ 4 min; one build, one pod.
+- **Difficulty: medium–hard.** First scenario spanning **source + tests +
+  pipeline**. "The pod is Ready" is explicitly insufficient — the `/health`
+  contract and the CI gate are part of done. The learner runs the gate, reads a
+  pytest assertion, uses Git to locate the regression, and anti-cheat blocks the
+  "edit the test" shortcut.
+
+---
+
+#### scenario-010 — Unresolved merge conflict
+
+- **Failure mode.** `break.patch` injects Git conflict markers around the
+  `fastapi` pin in `requirements.txt`:
+  `<<<<<<< HEAD` / `=======` / `>>>>>>> feature/bump-fastapi`. `pip install -r
+  requirements.txt` fails (`Invalid requirement: '<<<<<<< HEAD'`) → `docker
+  build` fails → no image → nothing deploys.
+- **Initial broken state & task.** `docker build` errors during `pip install`;
+  the scenario runner records a build failure and does **not** deploy. Task:
+  resolve the conflict to a single coherent pinned dependency set, get `docker
+  build` green, and deploy to score 100.
+- **CLI workflow.** run `docker build` (read the pip error and the offending
+  line number) → `git grep -nE '^(<<<<<<< |=======$|>>>>>>> )'` (locate every
+  marker) → `git log --oneline --merges` / `git show <merge>` (which side to
+  keep) → edit `requirements.txt` to one resolved line → `docker build` again.
+- **Symptoms & evidence.** `build.log` contains `<<<<<<<` and `Invalid
+  requirement` / `ERROR: … requirements.txt`; `git grep` for markers on the
+  broken `tree/` is non-empty. Evidence scan: `build_log_contains:
+  ["<<<<<<<","Invalid requirement"]`, `tree_has_conflict_markers: true`.
+- **`break.patch` scope.** `requirements.txt` — insert ~5 marker/duplicate
+  lines around the `fastapi` pin.
+- **Minimal `golden.patch`.** Replace the conflicted block with the single
+  resolved line `fastapi>=0.110,<1.0` (net: remove the 4 marker/dup lines).
+- **Weighted checks.** `image_build_ok` 20 / `git_tree_resolved` 20 +
+  functional 60 (helm 10 / rollout 10 / deployment_ready 10 / pods_ready 10 /
+  endpoints 5 / http 15). Broken: build fails → `image_build_ok` FAIL,
+  `git_tree_resolved` FAIL, all functional `NA` → **score 0**.
+- **Thresholds.** Broken `score_max: 10`; golden `score_min: 100`.
+  `must_fail: [image_build_ok, git_tree_resolved]`.
+- **Anti-cheat.** Resolved `requirements.txt` still pins `fastapi` and
+  `uvicorn[standard]` with bounded specifiers (regex); zero conflict markers in
+  any tracked file; `requirements.txt` not deleted / not emptied; `docker build`
+  reproducible; base §7.2 rules.
+- **Budget.** Failing `docker build` aborts fast at `pip install` (~30–60 s);
+  successful build ~60 s; `deploy_timeout` 45 s; wall time ≤ 4 min; one build,
+  one pod.
+- **Difficulty: medium.** Pure SCM-hygiene failure surfacing as a build error.
+  Unlike every other scenario there is **nothing running to inspect** — the
+  artifact never builds — so diagnosis is entirely `docker build` output +
+  `git grep` + `git log`. Exercises the "read the build log, use Git to
+  understand the conflict, resolve by hand" loop and a build-failure grading
+  path in the runner.
+
+### 11.6 Base-evolution rule (scenarios 002–010)
+
+1. **All shared-base capabilities land once, in milestone M-BE (§11.7), before
+   scenario-002.** Every change any of scenarios 002–010 needs in the deployable
+   base — `app/`, `charts/app/`, `docker/`, `requirements.txt`, `scripts/`, the
+   `Makefile` — is designed and merged in that single prerequisite milestone.
+2. **After M-BE the deployable base is frozen.** No scenario milestone (M3–M11)
+   may modify `app/`, `charts/app/`, `docker/`, `requirements.txt`, `scripts/`,
+   or any existing `Makefile` recipe. A scenario milestone adds only: its four
+   files under `harness/scenarios/<id>/`; one or more **append-only**
+   pure-function checks in `harness/evaluate.py` (never edits an existing check
+   or shared helper); and — already declared in M-BE — its Make targets.
+3. **`break.patch` never mutates the committed base.** As in M2, the runner
+   copies the base tree and applies patches to the *copy*; the patch files
+   themselves live under `harness/scenarios/<id>/`.
+4. **Full regression gate before every scenario milestone.** Re-run and pass:
+   `A1–A14`; and for **every previously completed scenario** (001 … N−1) its
+   `broken`, `golden`, `compose`, `anti-cheat`, and `namespace + cluster
+   teardown` checks. One failure blocks the new scenario until fixed.
+5. **All existing patches stay applicable and deterministic.** Every prior
+   `break.patch` / `golden.patch` must still apply cleanly (`patch -p1`), produce
+   the same PASS/FAIL set and score, and `break + golden` must still compose
+   byte-identical to the (now frozen) base. Because the base is frozen after
+   M-BE, from M3 onward this is a check, not a risk.
+
+### 11.7 Base-evolution milestone (M-BE) — contents
+
+One commit, landed after M2 and before M3. It is the **only** milestone that
+touches the deployable base.
+
+**1 · App (`app/`).** Config-driven structured logging. `app/main.py` (helper in
+a new `app/obs.py`) reads `LOG_FORMAT` (`json` default | `plain`) and `LOG_LEVEL`
+(`info` default). In `json` mode every stdout line is one JSON object with keys
+`ts` (ISO-8601 UTC), `level`, `logger`, `msg`, plus `method` / `path` / `status`
+for HTTP access lines; uvicorn's `access` and `error` loggers are attached to the
+same handler. `GET /` gains a `tier` field read from env `APP_TIER` (default
+`standard`). `GET /health` is unchanged (`{"status":"ok"}`).
+
+**2 · Chart (`charts/app/`).**
+- `values.yaml` gains, appended after the existing `env:` block:
+  `logFormat: json`, `logLevel: info`, `config: {key: tier, tier: standard}`,
+  and in the `image:` block `tagOverride: ""`.
+- new `templates/configmap.yaml` → `{{ include "app.fullname" . }}-config` with
+  data key `tier: {{ .Values.config.tier | quote }}`.
+- `templates/deployment.yaml`: image line becomes
+  `{{ .Values.image.tagOverride | default .Values.image.tag }}`; container `env`
+  gains `LOG_FORMAT`, `LOG_LEVEL` (from values) and `APP_TIER` via
+  `valueFrom.configMapKeyRef: {name: <fullname>-config, key: {{ .Values.config.key }}}`.
+- Additions are placed to **minimise patch-context drift**: new template file,
+  appended `values.yaml` keys, and one changed line in `deployment.yaml` far from
+  the probe / `securityContext` blocks that scenario-001's patch targets.
+
+**3 · CI gate (`scripts/ci.sh` + `make ci`).** `ci.sh` runs `pytest -q`,
+`helm lint charts/app`, `helm template` smoke, `docker build`, and a
+`:latest` / unpinned-base-image grep; exits non-zero on any failure. New file +
+new Makefile recipe.
+
+**4 · Makefile.** Add `ci`; add boilerplate targets `scenario-002 …
+scenario-010` (+ `-broken` / `-golden` / `-compose`) and their `.PHONY` entries,
+so **no scenario milestone edits the Makefile**.
+
+**5 · Harness generalisations** (not "base", but landed here for one review):
+`collect.py` also captures `ci.log`; `scenario.py` `_evidence_scan` reads
+`events.*`, `logs/*.log`, `pods.json`, `build.log`, `ci.log`; the runner gains
+the "build failed → record `image_build_ok=FAIL`, skip deploy, score from
+build/git checks" path (first exercised by scenario-010); `evaluate.py` gains an
+append-only check registry (existing 6 checks unchanged).
+
+**6 · Tests (`tests/`).** Add `test_logging.py` (json mode → parseable lines with
+required keys; plain mode → human-readable) and `test_root_tier.py` (`/` returns
+`tier`). Existing four tests unchanged → base-v2 collects **6** tests.
+
+**7 · Regression before M3 is unblocked.** Re-run and pass **`A1–A14`** and
+scenario-001 **`broken` / `golden` / `compose` / `anti-cheat` / `teardown`**.
+scenario-001's `break.patch` / `golden.patch` are **regenerated in the M-BE
+commit only if** the gate reports context drift; the fault (`/health` →
+`/health2`) and grading are unchanged and `break + golden` still composes
+byte-identical to base-v2. Append an addendum to `M1_EVIDENCE.md` /
+`M2_EVIDENCE.md` recording base-v2.
+
+**M-BE runtime:** base edits + `A1–A14` e2e (~5 min) + scenario-001 suite
+(~3 min) + new tests (~1 min) ≈ **~15–20 min automated** (plus authoring).
+
+### 11.8 Sequencing & runtime
+
+Order: **M-BE → M3 (002) → M4 (003) → M5 (004) → M6 (005) → M7 (006) →
+M8 (007) → M9 (008) → M10 (009) → M11 (010)**. One milestone at a time, in this
+order; none started before this matrix is approved.
+
+| Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
+|-----------|----------|--------------|---------------------------|-------:|-----------------:|
+| M-BE | base-evolution | **yes (only here)** | — (its own gate: A1–A14 + 001) | ~8 min | ~10 min (build+tests) |
+| M3 | 002 wrong pinned tag | no | A1–A14 + 001 | ~8 | ~3 |
+| M4 | 003 OOMKilled | no | + 002 | ~11 | ~4 |
+| M5 | 004 template wiring | no | + 003 | ~15 | ~3.5 |
+| M6 | 005 Service selector | no | + 004 | ~18 | ~3 |
+| M7 | 006 runs-as-root | no | + 005 | ~21 | ~3 |
+| M8 | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
+| M9 | 008 log-format regression | no | + 007 | ~28 | ~3 |
+| M10 | 009 CI + health contract | no | + 008 | ~31 | ~5 |
+| M11 | 010 merge conflict | no (harness only) | + 009 | ~36 | ~4 |
+
+- **Per-scenario suites (002–010):** ≈ **32 min** total.
+- **Regression gates (M3–M11):** ≈ **182 min** total (each = `A1–A14` ~5 min +
+  every prior scenario's broken/golden/compose suite).
+- **M-BE:** ≈ **18 min**. **kind up/down** across sessions ≈ **6 min**.
+- **Full M-BE → M11 automated run time ≈ 4.0–4.3 hours** (warm Docker cache, one
+  shared cluster per session; excludes authoring / debugging). This is
+  ~neutral vs. threading the two base deltas through M8/M10 (~4.0 hr there too):
+  the win is **structural, not temporal** — one tested base change instead of
+  two mid-program, zero patch-drift surface across M3–M11, and every regression
+  gate becomes a pure "frozen base + prior scenarios still green" check.
