@@ -132,12 +132,35 @@ def _anticheat(tree: pathlib.Path) -> list[str]:
     return viol
 
 
+_MEM_UNITS = {
+    "": 1, "k": 1000, "m": 1000**2, "g": 1000**3,
+    "ki": 1024, "mi": 1024**2, "gi": 1024**3,
+}
+
+
+def _mem_to_bytes(value) -> int:
+    """Parse a Kubernetes memory quantity ('16Mi', '64Mi', '1G', '512') to bytes.
+    Unparseable / missing -> 0 (so it fails any `>=` floor check)."""
+    if value is None:
+        return 0
+    s = str(value).strip()
+    num = s.rstrip("KMGkmgi")
+    unit = s[len(num):].lower()
+    try:
+        return int(float(num) * _MEM_UNITS.get(unit, 0))
+    except ValueError:
+        return 0
+
+
 def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -> list[str]:
     """Scenario-declared anti-cheat rules (additive to _anticheat / §7.2).
 
     Read from scenario.yaml `evaluation.anticheat`. Supported rule keys:
       tag_override_loaded_or_empty: true
           image.tagOverride must be "" or one of the tags the runner loaded.
+      min_memory: {requests: <qty>, limits: <qty>}
+          resources.requests/limits blocks must be present and non-empty, and
+          their .memory must be >= the given floor.
     """
     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
     viol: list[str] = []
@@ -149,6 +172,21 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
             viol.append(
                 f"image.tagOverride {override!r} is neither empty nor a loaded tag {loaded_tags}"
             )
+
+    floors = rules.get("min_memory") or {}
+    if floors:
+        res = tv.get("resources") or {}
+        for block in ("requests", "limits"):
+            if block not in floors:
+                continue
+            got = res.get(block)
+            if not got:
+                viol.append(f"resources.{block} block missing or empty")
+                continue
+            if _mem_to_bytes(got.get("memory")) < _mem_to_bytes(floors[block]):
+                viol.append(
+                    f"resources.{block}.memory {got.get('memory')!r} < floor {floors[block]!r}"
+                )
     return viol
 
 

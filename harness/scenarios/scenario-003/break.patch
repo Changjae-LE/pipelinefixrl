@@ -1,0 +1,8 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -24 +24 @@
+-    memory: 64Mi
++    memory: 16Mi
+@@ -27 +27 @@
+-    memory: 128Mi
++    memory: 16Mi

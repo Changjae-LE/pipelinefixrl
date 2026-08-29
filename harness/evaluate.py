@@ -82,6 +82,27 @@ def _image_pull_ok(*, run_dir, namespace, release, meta):
     return True, "no image-acquisition waiting states"
 
 
+@register_scenario_check("no_oomkill", 10)
+def _no_oomkill(*, run_dir, namespace, release, meta):
+    """PASS iff no container was OOM-killed and total restarts are within the
+    threshold. Owning scenario: scenario-003 (16Mi memory limit -> exit 137)."""
+    threshold = int(VERSIONS.get("RESTART_THRESHOLD", "0"))
+    pods = _load(run_dir, "pods.json")
+    items = pods.get("items", []) if isinstance(pods, dict) else []
+    oom, restarts = [], 0
+    for p in items:
+        for cs in (p.get("status") or {}).get("containerStatuses") or []:
+            restarts += cs.get("restartCount", 0)
+            term = (cs.get("lastState") or {}).get("terminated") or {}
+            if term.get("reason") == "OOMKilled":
+                oom.append(f"{cs.get('name')}: exit {term.get('exitCode')}")
+    if oom:
+        return False, "OOMKilled — " + "; ".join(oom)
+    if restarts > threshold:
+        return False, f"restartCount total {restarts} > threshold {threshold}"
+    return True, f"no OOMKill; restarts {restarts} <= {threshold}"
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
