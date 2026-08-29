@@ -115,6 +115,13 @@ def _anticheat(tree: pathlib.Path) -> list[str]:
     if tv.get("replicaCount") in (0, None):
         viol.append("replicaCount is 0 or absent")
 
+    # image hygiene (PROJECT_SPEC 2.5): universal, applies to every scenario.
+    img = tv.get("image") or {}
+    if img.get("pullPolicy") not in ("Never", "IfNotPresent"):
+        viol.append(f"image.pullPolicy is {img.get('pullPolicy')!r} (must be Never or IfNotPresent)")
+    if img.get("repository") != "pipelinefixrl/app":
+        viol.append(f"image.repository changed to {img.get('repository')!r}")
+
     base_tests = REPO_ROOT / "tests"
     for f in sorted(base_tests.rglob("*")):
         if f.is_file() and not _is_transient(f):
