@@ -1,7 +1,8 @@
 # Milestone 1 — Acceptance Evidence
 
-Captured: 2026-08-28. Host: Windows 11, Docker Desktop, Git Bash, cp949 locale.
-Commit under test: `67c767f` (M0+M1).
+Captured: 2026-08-28; A13 cold run added 2026-08-29. Host: Windows 11, Docker
+Desktop, Git Bash, cp949 locale. Commit under test: `67c767f` (M0+M1); cold A13
+run on `e112ede`.
 
 Environment bootstrapped in M0:
 - `winget install Kubernetes.kind Helm.Helm ezwinports.make` →
@@ -25,19 +26,23 @@ Environment bootstrapped in M0:
 | A10 | Run dir has non-empty events/logs/rollout/readiness/services/endpoints/checks/report | **PASS** | `.state/runs/base-20260828T171016Z/`: `events.txt`, `events.json`, `logs/app-*.app.log`, `rollout.json`, `readiness.json`, `services.json`, `endpoints.json`, `endpointslices.json`, `replicasets.json`, `pods.json`, `helm-status.json`, `node-images.txt`, `meta.json`, `checks.json`, `report.txt` |
 | A11 | `make clean-ns` deletes the run namespace; no other namespace affected | **PASS** | each e2e run ended `deleted namespace: pfrl-base-<ts>`; after runs `kubectl get ns` shows no `pfrl-*` |
 | A12 | `make kind-down` deletes the cluster; `.state/kubeconfig` + `.state/clusters/*` removed; default kubeconfig unchanged | **PASS** | `Deleted nodes: ["pipelinefixrl-control-plane"]`; `kind get clusters` → empty; `.state/kubeconfig` removed; `.state/clusters/` empty; no `pipelinefixrl` docker container; `~/.kube/config` still absent |
-| A13 | `make e2e-base` runs doctor→kind-up→test→deploy-base→verify-base→clean-ns in sequence, exit 0 | **PASS** | RUN 1: full chain, `e2e-base: PASS`, exit 0. See note below on cold-start. |
-| A14 | Running `make e2e-base` twice yields same PASS/score, new unique tag + run-id | **PASS** | RUN 2 exit 0, identical check set + `SCORE: 100`; new `run_id base-20260828T171016Z`; new image content id `7e6e06ce…` vs RUN 1 `520aef2f…`; distinct tag timestamp |
+| A13 | `make e2e-base` runs doctor→kind-up→test→deploy-base→verify-base→clean-ns in sequence, exit 0 | **PASS** | Cold run (2026-08-29, no pre-existing cluster/containers/`.state/kubeconfig`): `kind-up` logged `Creating cluster "pipelinefixrl" … Ready after 18s`; then `4 passed`; `SCORE: 100`; `verify` `healthy=True`; `deleted namespace: pfrl-base-20260829t014344z`; `e2e-base: PASS`; **exit code 0** in one uninterrupted invocation |
+| A14 | Running `make e2e-base` twice yields same PASS/score, new unique tag + run-id | **PASS** | On 2026-08-28: RUN 2 exit 0, identical check set + `SCORE: 100`; new `run_id base-20260828T171016Z`; new image content id `7e6e06ce…` vs RUN 1 `520aef2f…`; distinct tag timestamp. Third (cold) run 2026-08-29 produced yet another distinct `run_id base-20260829T014344Z` / tag `base-e112edef5d8e-20260829T014344Z`, same `SCORE: 100` |
 
 ## Notes / caveats
 
-- **A13 cold-start:** the two `make e2e-base` runs reused the cluster from an
-  earlier standalone `bash scripts/kind-up.sh` (kind-up is idempotent and logged
-  `cluster 'pipelinefixrl' already exists`). The fresh-create path *was*
-  exercised — by that initial `scripts/kind-up.sh` (logged `Creating cluster … ✓
-  Ready after 16s`) and the first standalone `harness run` (full
-  build→load→deploy→collect→evaluate, `SCORE: 100`) — just not inside a single
-  uninterrupted `make e2e-base`. After `make kind-down` there is now no cluster,
-  so a single cold `make e2e-base` can be run on request to make A13 airtight.
+- **A13 cold-start (resolved 2026-08-29):** a single uninterrupted
+  `make e2e-base` was run from a fully cold state — `kind get clusters` empty, no
+  `pipelinefixrl` docker containers, no `.state/kubeconfig`, no
+  `.state/clusters/*`, git tree clean. The target created the cluster itself
+  (`Creating cluster "pipelinefixrl" … ✓ Ready after 18s`) and completed the
+  whole chain doctor→kind-up→test→deploy-base→verify-base→clean-ns with
+  **exit code 0** and `SCORE: 100`. Run id `base-20260829T014344Z`, image
+  `pipelinefixrl/app:base-e112edef5d8e-20260829T014344Z`. The default kubeconfig
+  (`~/.kube/config`) was absent at baseline and remained absent throughout.
+  Earlier (2026-08-28) runs had reused a cluster from a standalone
+  `scripts/kind-up.sh` (idempotent, logged `already exists`); this cold run makes
+  A13 airtight.
 - **A4 on Windows:** POSIX `600` bits are not meaningful on NTFS under Git Bash,
   so isolation is enforced with `icacls /inheritance:r /grant:r "$USERNAME:F"`.
   `PLAN.md` A4 was updated to state this.
