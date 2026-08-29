@@ -4,6 +4,8 @@ image:
   repository: pipelinefixrl/app
   # tag is REQUIRED at deploy time (unique per build). Never "latest".
   tag: ""
+  # Optional exact-tag pin; when non-empty it REPLACES the computed tag.
+  tagOverride: ""
   pullPolicy: Never
 
 nameOverride: ""
@@ -58,3 +60,12 @@ securityContext:
 
 env:
   APP_VERSION: "0.1.0"
+
+# Structured logging config (base-v2 / M-BE). See app/obs.py.
+logFormat: json      # json | plain
+logLevel: info
+
+# Application config surfaced through a ConfigMap (base-v2 / M-BE).
+config:
+  key: tier
+  tier: standard

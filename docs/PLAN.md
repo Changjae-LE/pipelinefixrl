@@ -820,7 +820,9 @@ budget · difficulty & why it differs from scenario-001.
 - **Thresholds.** Broken `score_max: 50`; golden `score_min: 100`.
   `must_fail: [ci_gate_pass, http_health_ok]`.
 - **Anti-cheat.** **No file under `tests/` modified** (cannot fix CI by editing
-  the test); `pytest` still collects ≥ 6 tests (base-v2 count); `helm lint`
+  the test); `pytest` still collects **≥ 6** tests — a deliberate *lower bound*,
+  not the exact base-v2 count of 7 (see §11.7 item 6: the gate must catch a
+  deleted test without coupling to future base-vN test additions); `helm lint`
   clean; no `:latest` anywhere; `Chart.yaml` `version` valid semver; `/health`
   handler returns JSON `{"status":"ok"}` (grep) and the app imports; base §7.2
   rules.
@@ -945,9 +947,15 @@ the "build failed → record `image_build_ok=FAIL`, skip deploy, score from
 build/git checks" path (first exercised by scenario-010); `evaluate.py` gains an
 append-only check registry (existing 6 checks unchanged).
 
-**6 · Tests (`tests/`).** Add `test_logging.py` (json mode → parseable lines with
-required keys; plain mode → human-readable) and `test_root_tier.py` (`/` returns
-`tier`). Existing four tests unchanged → base-v2 collects **6** tests.
+**6 · Tests (`tests/`).** Add `test_logging.py` (2 tests: JSON formatter key
+shape; access-line `method`/`path`/`status` extraction) and `test_root_tier.py`
+(1 test: `/` returns `tier`). Existing four tests unchanged → **base-v2 collects
+7 tests** (verified: `pytest` → `7 passed`, exit 0). scenario-009's anti-cheat
+keeps a **`≥ 6` lower bound** (not `== 7`) *by design*: it must reject a
+submission that deletes a test without pinning the count to whatever the base
+happens to carry, so future base-vN test additions don't silently tighten an
+unrelated scenario's gate. `≥ 6` sits one below the current count and one above
+the M1 count (4) plus the two probe/health tests a fix must never remove.
 
 **7 · Regression before M3 is unblocked.** Re-run and pass **`A1–A14`** and
 scenario-001 **`broken` / `golden` / `compose` / `anti-cheat` / `teardown`**.

@@ -32,6 +32,22 @@ _BAD_EVENT_REASONS = {
     "ErrImageNeverPull",
 }
 
+# --- scenario-specific check registry (append-only; base-v2 / M-BE) -----------
+# A scenario milestone registers extra deterministic checks here WITHOUT editing
+# evaluate() or the six core checks. A run activates them via
+# meta["scenario_checks"] (list of ids); meta["weight_overrides"] (id -> int)
+# reallocates weight from the backbone so every scenario still totals 100.
+# When neither key is present (base app, scenario-001) evaluate() is unchanged.
+_SCENARIO_CHECKS: dict = {}
+
+
+def register_scenario_check(check_id: str, default_weight: int):
+    def _deco(fn):
+        _SCENARIO_CHECKS[check_id] = (default_weight, fn)
+        return fn
+
+    return _deco
+
 
 def _load(run_dir: pathlib.Path, name: str):
     try:
@@ -175,6 +191,24 @@ def evaluate(namespace: str, release: str, run_dir: pathlib.Path, meta: dict):
         if e.get("type") == "Warning" and e.get("reason") in _BAD_EVENT_REASONS:
             bad += e.get("count", 1)
     add("no_bad_events", bad == 0, f"warning events of interest={bad}")
+
+    # --- scenario-registered checks (no-op unless the run activates them) ---
+    weight_overrides = meta.get("weight_overrides") or {}
+    for cid in meta.get("scenario_checks") or []:
+        if cid not in _SCENARIO_CHECKS:
+            continue
+        default_w, fn = _SCENARIO_CHECKS[cid]
+        weight = int(weight_overrides.get(cid, default_w))
+        try:
+            ok, reason = fn(run_dir=run_dir, namespace=namespace, release=release, meta=meta)
+        except Exception as exc:  # noqa: BLE001 - a check crash is a FAIL, not a raise
+            ok, reason = False, f"check error: {exc}"
+        results.append(
+            {"id": cid, "weight": weight, "result": "PASS" if ok else "FAIL", "reason": reason}
+        )
+    for c in results:
+        if c["id"] in weight_overrides and c["id"] not in _SCENARIO_CHECKS:
+            c["weight"] = int(weight_overrides[c["id"]])
 
     non_na = [c for c in results if c["result"] != "NA"]
     denom = sum(c["weight"] for c in non_na) or 1

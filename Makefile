@@ -13,14 +13,19 @@ ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 VENV := $(ROOT)/.venv
 PY   := $(VENV)/Scripts/python.exe
 
-.PHONY: help setup doctor kind-up kind-down test lint build deploy-base verify-base clean-ns e2e-base \
-        scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval
+# Scenarios with generated targets (scenario-001 keeps its explicit block below).
+SCENARIOS := 002 003 004 005 006 007 008 009 010
+
+.PHONY: help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
+        scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval \
+        $(foreach s,$(SCENARIOS),scenario-$(s) scenario-$(s)-broken scenario-$(s)-golden scenario-$(s)-compose)
 
 SID ?= scenario-001
 
 help:
-	@echo "M1: setup doctor kind-up kind-down test lint build deploy-base verify-base clean-ns e2e-base"
+	@echo "M1: setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base"
 	@echo "M2: scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval"
+	@echo "M3+: scenario-0NN[-broken|-golden|-compose] for NN in $(SCENARIOS) (targets declared; scenarios not yet implemented)"
 
 setup:
 	python -m venv "$(VENV)"
@@ -41,6 +46,9 @@ test:
 
 lint:
 	bash scripts/lint.sh
+
+ci:
+	bash scripts/ci.sh
 
 build:
 	"$(PY)" -m harness build --variant base
@@ -80,3 +88,24 @@ e2e-scenario-001: doctor kind-up scenario-001
 
 eval:
 	"$(PY)" -m harness eval --id $(SID)
+
+# --- M3+: boilerplate targets for scenario-002 .. scenario-010 -------------
+# Declared now (base-evolution / M-BE) so no later scenario milestone edits
+# this Makefile. Each recipe is a thin wrapper over the harness; the scenarios
+# themselves are NOT implemented yet.
+define SCENARIO_RULES
+scenario-$(1)-broken:
+	"$$(PY)" -m harness scenario --id scenario-$(1) --variant broken
+	"$$(PY)" -m harness scenario-cleanup-ns --id scenario-$(1) --variant broken
+
+scenario-$(1)-golden:
+	"$$(PY)" -m harness scenario --id scenario-$(1) --variant golden
+	"$$(PY)" -m harness scenario-cleanup-ns --id scenario-$(1) --variant golden
+
+scenario-$(1)-compose:
+	"$$(PY)" -m harness compose-check --id scenario-$(1)
+
+scenario-$(1): scenario-$(1)-broken scenario-$(1)-golden scenario-$(1)-compose
+	@echo "scenario-$(1): PASS"
+endef
+$(foreach s,$(SCENARIOS),$(eval $(call SCENARIO_RULES,$(s))))

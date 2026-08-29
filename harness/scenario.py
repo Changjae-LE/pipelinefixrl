@@ -125,22 +125,45 @@ def _anticheat(tree: pathlib.Path) -> list[str]:
     return viol
 
 
-def _evidence_scan(run_dir: pathlib.Path, spec: dict) -> dict:
-    out: dict[str, bool] = {}
-    events = ""
-    for name in ("events.txt", "events.json"):
+def _read_all(run_dir: pathlib.Path, *names: str) -> str:
+    blob = ""
+    for name in names:
         fp = run_dir / name
         if fp.exists():
-            events += fp.read_text(encoding="utf-8", errors="replace")
+            blob += fp.read_text(encoding="utf-8", errors="replace")
+    return blob
+
+
+def _evidence_scan(run_dir: pathlib.Path, spec: dict) -> dict:
+    """Substring evidence scan. `spec` keys map to a collected artifact:
+      events_contains    -> events.txt + events.json
+      logs_contains      -> logs/*.log
+      pods_json_contains -> pods.json
+      build_log_contains -> build.log
+      ci_log_contains    -> ci.log
+    """
+    out: dict[str, bool] = {}
+
+    events = _read_all(run_dir, "events.txt", "events.json")
     logs = ""
     logs_dir = run_dir / "logs"
     if logs_dir.is_dir():
         for lf in sorted(logs_dir.glob("*.log")):
             logs += lf.read_text(encoding="utf-8", errors="replace")
-    for needle in spec.get("events_contains", []):
-        out[f"events contains {needle!r}"] = needle in events
-    for needle in spec.get("logs_contains", []):
-        out[f"logs contains {needle!r}"] = needle in logs
+    pods = _read_all(run_dir, "pods.json")
+    build_log = _read_all(run_dir, "build.log")
+    ci_log = _read_all(run_dir, "ci.log")
+
+    sources = {
+        "events_contains": ("events", events),
+        "logs_contains": ("logs", logs),
+        "pods_json_contains": ("pods.json", pods),
+        "build_log_contains": ("build.log", build_log),
+        "ci_log_contains": ("ci.log", ci_log),
+    }
+    for key, (label, blob) in sources.items():
+        for needle in spec.get(key, []):
+            out[f"{label} contains {needle!r}"] = needle in blob
     return out
 
 
@@ -160,6 +183,50 @@ def _check_expect(checks: list[dict], score: int, expect: dict, violations: list
     if expect.get("anticheat_clean") and violations:
         problems.append(f"anti-cheat violations present: {violations}")
     return problems
+
+
+def _finish_build_failure(scenario_id, variant, run_id, run_dir, tree, cfg, meta, enforce):
+    """Scaffold for the 'image never built' path (scenario-010 fills in the
+    `image_build_ok` / `git_tree_resolved` checks and their weights)."""
+    markers = ("<<<<<<< ", "=======", ">>>>>>> ")
+    conflicts = []
+    for f in sorted(tree.rglob("*")):
+        if f.is_file() and not _is_transient(f):
+            try:
+                txt = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if any(m in txt for m in markers):
+                conflicts.append(f.relative_to(tree).as_posix())
+
+    ev = cfg.get("evaluation", {}) or {}
+    expect = ((ev.get("expect") or {}).get(variant)) or {}
+    verdict = {
+        "run_id": run_id,
+        "scenario": scenario_id,
+        "variant": variant,
+        "score": 0,
+        "build_ok": False,
+        "conflict_marker_files": conflicts,
+        "note": (
+            "docker build failed; deploy skipped. image_build_ok / "
+            "git_tree_resolved checks and weights land with scenario-010."
+        ),
+        "expected": expect,
+        "matches_expectation": variant == "broken",
+    }
+    (run_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (run_dir / "report.txt").write_text(
+        f"{run_id}\nBUILD FAILED — deploy skipped.\nSCORE: 0\n"
+        f"conflict markers in: {conflicts or 'none'}\n",
+        encoding="utf-8",
+    )
+    _last_pointer(f"{scenario_id}-{variant}").write_text(run_id, encoding="utf-8")
+    print(f"{run_id}: BUILD FAILED (deploy skipped); conflict markers in {conflicts or 'none'}")
+    if enforce and variant == "golden":
+        raise SystemExit(f"{run_id}: golden variant failed to build")
+    return run_id, 0, verdict
 
 
 def run_scenario(scenario_id: str, variant: str, enforce: bool = True):
@@ -204,7 +271,22 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True):
         "anticheat_violations": violations,
     }
 
-    build_and_load(f"{scenario_id}-{variant}", tree=tree, tag=tag)
+    # Build path with a build-failure branch (fully exercised by scenario-010):
+    # on failure, capture build.log, skip deploy, and score from build/git checks.
+    try:
+        build_and_load(f"{scenario_id}-{variant}", tree=tree, tag=tag)
+        meta["build_ok"] = True
+    except Exception as e:  # noqa: BLE001 - any build/load failure routes here
+        meta["build_ok"] = False
+        cap = tools.run(
+            ["docker", "build", "-f", str(tree / "docker" / "Dockerfile"), "-t", tag, str(tree)],
+            check=False,
+        )
+        (run_dir / "build.log").write_text(
+            (cap.stdout or "") + (cap.stderr or "") + f"\n[exception] {e}\n",
+            encoding="utf-8",
+        )
+        return _finish_build_failure(scenario_id, variant, run_id, run_dir, tree, cfg, meta, enforce)
 
     node = f"{VERSIONS['KIND_CLUSTER_NAME']}-control-plane"
     imgs = tools.run(["docker", "exec", node, "crictl", "images"], check=False)

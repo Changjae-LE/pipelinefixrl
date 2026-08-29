@@ -18,7 +18,7 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ required "image.tag is required and must not be 'latest'" .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tagOverride | default (required "image.tag is required and must not be 'latest'" .Values.image.tag) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -29,6 +29,15 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            - name: LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: APP_TIER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "app.fullname" . }}-config
+                  key: {{ .Values.config.key }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           livenessProbe:
