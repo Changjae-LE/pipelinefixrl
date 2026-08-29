@@ -989,13 +989,27 @@ order; none started before this matrix is approved.
   `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
   containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
   `~/.kube/config` unchanged.
-- **Next: M4 / scenario-003 — not started.**
+- **M4 / scenario-003 ✅ complete** — commit `bec74c9`
+  *feat: add deterministic OOMKilled crash loop scenario*. Broken run twice →
+  deterministic **SCORE 10** with `OOMKilled` / exit `137` / `BackOff` evidence
+  (`lastState.terminated.reason == OOMKilled`, `exitCode 137`, `CrashLoopBackOff`;
+  volatile `restartCount` / event counts differ, all graded outcomes match);
+  golden → **SCORE 100** with `no_oomkill` PASS and **0 restarts**
+  (`requests/limits.memory` restored to `64Mi`/`128Mi`); compose-check
+  byte-identical. Full regression gate re-run 2026-08-29 on the committed
+  harness: `A1–A14` (`make e2e-base`, SCORE 100) **and** scenario-001
+  (broken 10 / golden 100 / compose) **and** scenario-002
+  (broken 10 / golden 100 / compose) all PASS; scoped namespace cleanup +
+  `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
+  containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
+  `~/.kube/config` unchanged.
+- **Next: M5 / scenario-004 — not started.**
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
 | M-BE ✅ | base-evolution | **yes (only here)** | — (its own gate: A1–A14 + 001) | ~8 min | ~10 min (build+tests) |
 | M3 ✅ | 002 wrong pinned tag | no | A1–A14 + 001 | ~8 | ~3 |
-| M4 | 003 OOMKilled | no | + 002 | ~11 | ~4 |
+| M4 ✅ | 003 OOMKilled | no | + 002 | ~11 | ~4 |
 | M5 | 004 template wiring | no | + 003 | ~15 | ~3.5 |
 | M6 | 005 Service selector | no | + 004 | ~18 | ~3 |
 | M7 | 006 runs-as-root | no | + 005 | ~21 | ~3 |
