@@ -1018,7 +1018,28 @@ order; none started before this matrix is approved.
   `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
   containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
   `~/.kube/config` unchanged.
-- **Next: M6 / scenario-005 — not started.**
+- **M6 / scenario-005 ✅ complete** — commit `ee847c3`
+  *feat: add deterministic service selector mismatch scenario*. Mandatory
+  pre-implementation gate on `0925933`: `A1–A14` (`make e2e-base`, SCORE 100)
+  **and** scenario-001 · scenario-002 · scenario-003 · scenario-004 (each
+  broken 10 / golden 100 / compose) all PASS. Broken run twice → deterministic
+  **SCORE 50** with identical graded outcomes / evidence — Service selector
+  `{app.kubernetes.io/name: web}` ≠ Deployment `matchLabels`
+  (`{name: app, instance: app}`), `endpoints_present` FAIL
+  (`ready endpoint addresses=0`), `http_health_ok` FAIL
+  (`service has no ready endpoints`), `service_selects_pods` FAIL; pod stays
+  `Ready` with `0` restarts (`readyReplicas 1`); volatile run-id/namespace/image
+  differ only. Golden → **SCORE 100** with all **seven** checks PASS
+  (`service_selects_pods`: `selector matches Deployment; 1 ready endpoint(s)`);
+  anti-cheat clean (base + golden-only `service_wiring_intact` rule);
+  compose-check byte-identical. Post-implementation full regression on the
+  committed harness: `A1–A14` (SCORE 100) **and** scenario-001 · scenario-002 ·
+  scenario-003 · scenario-004 (broken 10 / golden 100 / compose) · scenario-005
+  (broken 50 / golden 100 / compose) all PASS; scoped namespace cleanup +
+  `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
+  containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
+  `~/.kube/config` unchanged.
+- **Next: M7 / scenario-006 — not started.**
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
@@ -1026,7 +1047,7 @@ order; none started before this matrix is approved.
 | M3 ✅ | 002 wrong pinned tag | no | A1–A14 + 001 | ~8 | ~3 |
 | M4 ✅ | 003 OOMKilled | no | + 002 | ~11 | ~4 |
 | M5 ✅ | 004 template wiring | no | + 003 | ~15 | ~3.5 |
-| M6 | 005 Service selector | no | + 004 | ~18 | ~3 |
+| M6 ✅ | 005 Service selector | no | + 004 | ~18 | ~3 |
 | M7 | 006 runs-as-root | no | + 005 | ~21 | ~3 |
 | M8 | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
 | M9 | 008 log-format regression | no | + 007 | ~28 | ~3 |
