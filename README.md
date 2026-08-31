@@ -12,7 +12,18 @@ the micro1 Agentic Workflows Hackathon.
   [`docs/M1_EVIDENCE.md`](docs/M1_EVIDENCE.md).
 - **Milestone 2** (scenario-001, incorrect readiness probe path) — implemented;
   evidence in [`docs/M2_EVIDENCE.md`](docs/M2_EVIDENCE.md).
-- Scenarios 002–010 and the baseline/advanced agents — not started.
+- **M-BE** (base-evolution prerequisites for scenarios 002–010) — implemented.
+- **Milestones M3–M8** — implemented; per-milestone evidence in
+  [`docs/PLAN.md`](docs/PLAN.md) §11.8:
+  - **M3** scenario-002 — wrong pinned image tag (`ErrImageNeverPull`)
+  - **M4** scenario-003 — OOMKilled crash loop
+  - **M5** scenario-004 — Helm value not wired to template (`InvalidImageName`)
+  - **M6** scenario-005 — Service selects no pods
+  - **M7** scenario-006 — container runs as root (`runs_as_nonroot`,
+    `readonly_rootfs`, `no_priv_escalation`, `caps_dropped` checks)
+  - **M8** scenario-007 — misconfigured ConfigMap reference
+    (`CreateContainerConfigError`; `config_applied` check)
+- Scenarios 008–010 (M9–M11) and the baseline/advanced agents — not started.
 
 ## Prerequisites
 
