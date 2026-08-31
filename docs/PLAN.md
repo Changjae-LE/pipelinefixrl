@@ -1003,14 +1003,29 @@ order; none started before this matrix is approved.
   `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
   containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
   `~/.kube/config` unchanged.
-- **Next: M5 / scenario-004 — not started.**
+- **M5 / scenario-004 ✅ complete** — commit `57a853c`
+  *feat: add deterministic InvalidImageName scenario*. Broken run twice →
+  deterministic **SCORE 10** with `InvalidImageName` and empty-tag evidence
+  (`state.waiting.reason == InvalidImageName`, rendered pod image
+  `pipelinefixrl/app:`, `events`/`pods.json` contain `InvalidImageName`;
+  volatile run-id/namespace/image differ, all graded outcomes match); golden →
+  **SCORE 100** with all six backbone checks PASS (template restored to consume
+  the `--set image.tag` value); anti-cheat clean (base + golden-only
+  `image_ref_wired` rule); compose-check byte-identical. Full regression gate
+  re-run 2026-08-29 on the committed harness: `A1–A14` (`make e2e-base`,
+  SCORE 100) **and** scenario-001 · scenario-002 · scenario-003 · scenario-004
+  (each broken 10 / golden 100 / compose) all PASS; scoped namespace cleanup +
+  `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
+  containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
+  `~/.kube/config` unchanged.
+- **Next: M6 / scenario-005 — not started.**
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
 | M-BE ✅ | base-evolution | **yes (only here)** | — (its own gate: A1–A14 + 001) | ~8 min | ~10 min (build+tests) |
 | M3 ✅ | 002 wrong pinned tag | no | A1–A14 + 001 | ~8 | ~3 |
 | M4 ✅ | 003 OOMKilled | no | + 002 | ~11 | ~4 |
-| M5 | 004 template wiring | no | + 003 | ~15 | ~3.5 |
+| M5 ✅ | 004 template wiring | no | + 003 | ~15 | ~3.5 |
 | M6 | 005 Service selector | no | + 004 | ~18 | ~3 |
 | M7 | 006 runs-as-root | no | + 005 | ~21 | ~3 |
 | M8 | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
