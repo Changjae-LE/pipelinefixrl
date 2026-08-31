@@ -1,0 +1,63 @@
+id: scenario-005
+title: Service selects no pods
+category: kubernetes/networking
+difficulty: medium
+description: >
+  charts/app/templates/service.yaml pins the Service .spec.selector to a
+  hardcoded label set (app.kubernetes.io/name: web) instead of the labels the
+  application's pods actually carry. The Deployment, its selector, the pod
+  labels, and the pod itself are untouched, so the rollout completes and the
+  pod is Ready — but the Service matches no pod, has no endpoints, and nothing
+  can reach the application through the Service.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-scenario-005
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 45
+  restart_threshold: 0
+
+  # activate the scenario-specific scored check and reallocate backbone weight
+  # so the total is still 100 (helm 10 / rollout 15 / deployment_ready 15 /
+  # pods_ready 10 / endpoints 15 / http 20 / service_selects_pods 15).
+  checks: [service_selects_pods]
+  weights:
+    rollout_complete: 15
+    deployment_ready: 15
+    pods_ready: 10
+    service_selects_pods: 15
+
+  # additive to the base anti-cheat (PROJECT_SPEC 7.2). Blocks a fix that adds a
+  # second Service or an ExternalName shim, hard-codes the selector instead of
+  # deriving it from the pods, or changes the Deployment selector / pod labels.
+  anticheat:
+    service_wiring_intact: true
+
+  expect:
+    broken:
+      score_max: 55
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+      must_fail:
+        - endpoints_present
+        - http_health_ok
+        - service_selects_pods
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - service_selects_pods
+      anticheat_clean: true

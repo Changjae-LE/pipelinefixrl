@@ -103,6 +103,55 @@ def _no_oomkill(*, run_dir, namespace, release, meta):
     return True, f"no OOMKill; restarts {restarts} <= {threshold}"
 
 
+@register_scenario_check("service_selects_pods", 15)
+def _service_selects_pods(*, run_dir, namespace, release, meta):
+    """PASS iff the Service's selector is non-empty and structurally equal to the
+    Deployment's selector.matchLabels, AND at least one EndpointSlice endpoint
+    resolves to a Ready pod carrying those labels. Owning scenario: scenario-005
+    (selector hardcoded to a non-matching label set)."""
+    svcs = _load(run_dir, "services.json")
+    svc = next(
+        (s for s in (svcs.get("items") or []) if (s.get("metadata") or {}).get("name") == release),
+        None,
+    )
+    if svc is None:
+        return False, f"Service {release!r} not found"
+    sel = (svc.get("spec") or {}).get("selector") or {}
+    if not sel:
+        return False, "Service .spec.selector is empty"
+
+    dep = _load(run_dir, "rollout.json")
+    want = ((dep.get("spec") or {}).get("selector") or {}).get("matchLabels") or {}
+    if sel != want:
+        return False, f"Service selector {sel} != Deployment matchLabels {want}"
+
+    pods = {
+        (p.get("metadata") or {}).get("name"): p
+        for p in (_load(run_dir, "pods.json").get("items") or [])
+    }
+    ready_targets = 0
+    for sl in _load(run_dir, "endpointslices.json").get("items") or []:
+        labels = (sl.get("metadata") or {}).get("labels") or {}
+        if labels.get("kubernetes.io/service-name") != release:
+            continue
+        for ep in sl.get("endpoints") or []:
+            if not (ep.get("conditions") or {}).get("ready"):
+                continue
+            tref = ep.get("targetRef") or {}
+            if tref.get("kind") != "Pod":
+                continue
+            pod = pods.get(tref.get("name"))
+            if not pod:
+                continue
+            plabels = (pod.get("metadata") or {}).get("labels") or {}
+            pconds = {c["type"]: c["status"] for c in (pod.get("status") or {}).get("conditions") or []}
+            if pconds.get("Ready") == "True" and all(plabels.get(k) == v for k, v in want.items()):
+                ready_targets += 1
+    if ready_targets < 1:
+        return False, "no EndpointSlice endpoint resolves to a Ready pod of the Deployment"
+    return True, f"selector matches Deployment; {ready_targets} ready endpoint(s)"
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

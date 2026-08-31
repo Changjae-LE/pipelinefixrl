@@ -1,0 +1,5 @@
+--- a/charts/app/templates/service.yaml
++++ b/charts/app/templates/service.yaml
+@@ -15 +15 @@
+-    app.kubernetes.io/name: web
++    {{- include "app.selectorLabels" . | nindent 4 }}

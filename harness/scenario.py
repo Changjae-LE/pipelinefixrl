@@ -166,6 +166,10 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
           deployment.yaml's container image line must still be wired to
           .Values.image.repository and .Values.image.tag, keep a `required`
           guard on the tag, and carry no hard-coded literal tag.
+      service_wiring_intact: true
+          service.yaml defines exactly one Service, no ExternalName, and derives
+          its selector from the `app.selectorLabels` helper; deployment.yaml's
+          selector / pod labels still use that same helper.
     """
     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
     viol: list[str] = []
@@ -211,6 +215,18 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
             bare = re.sub(r"\{\{.*?\}\}", "", line)
             if ":latest" in bare or re.search(r":\s*['\"]?v?\d", bare):
                 viol.append(f"image line hard-codes a literal tag: {line.strip()!r}")
+
+    if rules.get("service_wiring_intact"):
+        svc = (tree / "charts" / "app" / "templates" / "service.yaml").read_text(encoding="utf-8")
+        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
+        if svc.count("kind: Service") != 1:
+            viol.append("service.yaml must define exactly one Service")
+        if "ExternalName" in svc:
+            viol.append("service.yaml must not use type ExternalName")
+        if 'include "app.selectorLabels"' not in svc:
+            viol.append("service.yaml selector no longer derives from the app.selectorLabels helper")
+        if dep.count('include "app.selectorLabels"') < 2:
+            viol.append("deployment.yaml selector / pod labels no longer use app.selectorLabels")
     return viol
 
 
