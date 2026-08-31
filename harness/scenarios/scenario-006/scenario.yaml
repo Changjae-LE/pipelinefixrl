@@ -1,0 +1,73 @@
+id: scenario-006
+title: Container runs as root
+category: security/pod-security
+difficulty: medium
+description: >
+  charts/app/values.yaml weakens the container securityContext:
+  runAsNonRoot false, runAsUser 0, allowPrivilegeEscalation true,
+  readOnlyRootFilesystem false, and capabilities.drop emptied. The application
+  still serves — root can bind :8000 and the rootfs is writable — so every
+  functional check passes, but the pod runs with a non-compliant runtime
+  security posture.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-scenario-006
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 60
+  restart_threshold: 0
+
+  # functional backbone reduced to 55, posture checks add 45 -> total 100.
+  checks: [runs_as_nonroot, readonly_rootfs, no_priv_escalation, caps_dropped]
+  weights:
+    rollout_complete: 10
+    deployment_ready: 10
+    pods_ready: 5
+    endpoints_present: 10
+    http_health_ok: 10
+    runs_as_nonroot: 15
+    readonly_rootfs: 10
+    no_priv_escalation: 10
+    caps_dropped: 10
+
+  # additive to the base anti-cheat (PROJECT_SPEC 7.2). Blocks "securing" the
+  # pod by disabling the app or faking the posture: seccomp RuntimeDefault must
+  # stay, runAsUser must be a real non-root uid, and no privileged sidecar or
+  # root-mounted volume may be introduced.
+  anticheat:
+    security_posture_intact: true
+
+  expect:
+    broken:
+      score_max: 55
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      must_fail:
+        - runs_as_nonroot
+        - readonly_rootfs
+        - no_priv_escalation
+        - caps_dropped
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - runs_as_nonroot
+        - readonly_rootfs
+        - no_priv_escalation
+        - caps_dropped
+      anticheat_clean: true
