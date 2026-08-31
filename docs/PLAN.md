@@ -1039,7 +1039,33 @@ order; none started before this matrix is approved.
   `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
   containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
   `~/.kube/config` unchanged.
-- **Next: M7 / scenario-006 — not started.**
+- **M7 / scenario-006 ✅ complete** — commit `9492bdc`
+  *feat: add deterministic runs-as-root pod-security scenario*. Mandatory
+  pre-implementation gate on `22eb6c1`: `A1–A14` (`make e2e-base`, SCORE 100)
+  **and** scenario-001 · scenario-002 · scenario-003 · scenario-004 ·
+  scenario-005 (each broken / golden / compose) all PASS. Broken run twice →
+  deterministic **SCORE 55** with identical graded outcomes — container
+  `securityContext` weakened in `charts/app/values.yaml` (`runAsNonRoot false`,
+  `runAsUser 0`, `allowPrivilegeEscalation true`, `readOnlyRootFilesystem false`,
+  `capabilities.drop []`); the pod stays `Ready` with `0` restarts and
+  `GET /health -> 200`, so all six functional backbone checks + `no_bad_events`
+  PASS, while the four posture checks `runs_as_nonroot` / `readonly_rootfs` /
+  `no_priv_escalation` / `caps_dropped` FAIL (15/10/10/10); the universal §7.2
+  anti-cheat deterministically lists the three weakened-`securityContext`
+  violations (reported, not enforced against the broken reference); volatile
+  run-id/namespace/image differ only. Golden → **SCORE 100** with all **eleven**
+  checks PASS (`runs_as_nonroot`: `runAsNonRoot=True runAsUser=1000`;
+  `caps_dropped`: `drop=['ALL'] add=[]`); anti-cheat clean (base §7.2 +
+  golden-only `security_posture_intact` rule — seccomp `RuntimeDefault` retained,
+  `runAsUser` ≥ 1000, no privileged / `SYS_ADMIN` container, no volume mounted at
+  `/`); compose-check byte-identical. Post-implementation full regression on the
+  committed harness: `A1–A14` (SCORE 100) **and** scenario-001 · scenario-002 ·
+  scenario-003 · scenario-004 (broken 10 / golden 100 / compose) · scenario-005
+  (broken 50 / golden 100 / compose) · scenario-006 (broken 55 / golden 100 /
+  compose) all PASS; scoped namespace cleanup + `scripts/kind-down.sh` clean —
+  no `pfrl-*` namespaces, no kind cluster or containers, `.state/kubeconfig`
+  removed, `.state/clusters/` empty, default `~/.kube/config` unchanged.
+- **Next: M8 / scenario-007 — not started.**
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
@@ -1048,7 +1074,7 @@ order; none started before this matrix is approved.
 | M4 ✅ | 003 OOMKilled | no | + 002 | ~11 | ~4 |
 | M5 ✅ | 004 template wiring | no | + 003 | ~15 | ~3.5 |
 | M6 ✅ | 005 Service selector | no | + 004 | ~18 | ~3 |
-| M7 | 006 runs-as-root | no | + 005 | ~21 | ~3 |
+| M7 ✅ | 006 runs-as-root | no | + 005 | ~21 | ~3 |
 | M8 | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
 | M9 | 008 log-format regression | no | + 007 | ~28 | ~3 |
 | M10 | 009 CI + health contract | no | + 008 | ~31 | ~5 |
