@@ -23,7 +23,9 @@ the micro1 Agentic Workflows Hackathon.
     `readonly_rootfs`, `no_priv_escalation`, `caps_dropped` checks)
   - **M8** scenario-007 — misconfigured ConfigMap reference
     (`CreateContainerConfigError`; `config_applied` check)
-- Scenarios 008–010 (M9–M11) and the baseline/advanced agents — not started.
+- **Baseline & advanced repair agents** — implemented (`harness/agents/fix_agent.py`,
+  `make baseline` / `advanced` / `eval-agents`); see "Baseline & advanced solutions".
+- Scenarios 008–010 (M9–M11) — not started.
 
 ## Prerequisites
 
