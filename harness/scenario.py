@@ -370,9 +370,9 @@ def _finish_build_failure(scenario_id, variant, run_id, run_dir, tree, cfg, meta
     return run_id, 0, verdict
 
 
-def run_scenario(scenario_id: str, variant: str, enforce: bool = True):
-    if variant not in ("broken", "golden"):
-        raise ValueError("variant must be 'broken' or 'golden'")
+def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_patch=None):
+    if variant not in ("broken", "golden", "baseline", "advanced"):
+        raise ValueError("variant must be 'broken', 'golden', 'baseline', or 'advanced'")
     ensure_state_dirs()
     cfg = _load_cfg(scenario_id)
     sdir = _scenario_dir(scenario_id)
@@ -384,9 +384,14 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True):
     run_dir.mkdir(parents=True, exist_ok=True)
 
     _copy_base_tree(tree)
+    # Every non-broken variant is a *candidate fix* applied on top of the same
+    # injected fault: golden = the reference patch; baseline / advanced = an
+    # agent's submitted patch (None => the agent submitted no change).
     patch_seq = [sdir / cfg["patches"]["break"]]
     if variant == "golden":
         patch_seq.append(sdir / cfg["patches"]["golden"])
+    elif variant in ("baseline", "advanced") and agent_patch is not None:
+        patch_seq.append(pathlib.Path(agent_patch))
     for p in patch_seq:
         _apply_patch(tree, p)
 
@@ -398,7 +403,7 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True):
     # candidate fix (golden / agent submission), never against the broken
     # reference which is the injected fault, not a shortcut.
     violations = _anticheat(tree)
-    if variant == "golden":
+    if variant in ("golden", "baseline", "advanced"):
         violations += _scenario_anticheat(cfg, tree, loaded_tags=[tag])
     (run_dir / "anticheat.json").write_text(
         json.dumps(violations, indent=2), encoding="utf-8"

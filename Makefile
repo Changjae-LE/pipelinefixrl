@@ -16,7 +16,7 @@ PY   := $(VENV)/Scripts/python.exe
 # Scenarios with generated targets (scenario-001 keeps its explicit block below).
 SCENARIOS := 002 003 004 005 006 007 008 009 010
 
-.PHONY: help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
+.PHONY: baseline advanced eval-agents help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
         scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval \
         $(foreach s,$(SCENARIOS),scenario-$(s) scenario-$(s)-broken scenario-$(s)-golden scenario-$(s)-compose)
 
@@ -109,3 +109,29 @@ scenario-$(1): scenario-$(1)-broken scenario-$(1)-golden scenario-$(1)-compose
 	@echo "scenario-$(1): PASS"
 endef
 $(foreach s,$(SCENARIOS),$(eval $(call SCENARIO_RULES,$(s))))
+
+# --- Baseline / Advanced repair agents (hackathon submission) --------------
+# baseline = offline no-LLM heuristic; advanced = Claude Code agentic workflow.
+# Both submit a candidate fix that the unchanged harness builds, deploys and
+# scores as a `baseline` / `advanced` variant run.
+AGENT_SID ?= scenario-001
+
+baseline:
+	"$(PY)" -m harness agent --id $(AGENT_SID) --tier baseline --allow-unexpected
+	"$(PY)" -m harness scenario-cleanup-ns --id $(AGENT_SID) --variant baseline
+
+advanced:
+	"$(PY)" -m harness agent --id $(AGENT_SID) --tier advanced --allow-unexpected
+	"$(PY)" -m harness scenario-cleanup-ns --id $(AGENT_SID) --variant advanced
+
+# broken vs golden vs baseline vs advanced, one scenario, all four scored runs.
+eval-agents:
+	"$(PY)" -m harness scenario --id $(AGENT_SID) --variant broken --allow-unexpected
+	"$(PY)" -m harness scenario-cleanup-ns --id $(AGENT_SID) --variant broken
+	"$(PY)" -m harness scenario --id $(AGENT_SID) --variant golden
+	"$(PY)" -m harness scenario-cleanup-ns --id $(AGENT_SID) --variant golden
+	"$(PY)" -m harness agent --id $(AGENT_SID) --tier baseline --allow-unexpected
+	"$(PY)" -m harness scenario-cleanup-ns --id $(AGENT_SID) --variant baseline
+	"$(PY)" -m harness agent --id $(AGENT_SID) --tier advanced --allow-unexpected
+	"$(PY)" -m harness scenario-cleanup-ns --id $(AGENT_SID) --variant advanced
+	@echo "eval-agents ($(AGENT_SID)): PASS"

@@ -57,6 +57,11 @@ def cmd_eval(args):
     scenmod.compose_check(args.id)
 
 
+def cmd_agent(args):
+    from harness.agents import fix_agent
+    fix_agent.run(args.id, args.tier, enforce=not args.allow_unexpected)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="harness", description="PipelineFixRL harness")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -89,7 +94,8 @@ def main(argv=None):
 
     sc = sub.add_parser("scenario-cleanup-ns", help="delete a scenario variant's namespace")
     sc.add_argument("--id", required=True)
-    sc.add_argument("--variant", required=True, choices=["broken", "golden"])
+    sc.add_argument("--variant", required=True,
+                    choices=["broken", "golden", "baseline", "advanced"])
     sc.set_defaults(func=cmd_scenario_cleanup_ns)
 
     cc = sub.add_parser("compose-check", help="prove break.patch + golden.patch == base")
@@ -99,6 +105,13 @@ def main(argv=None):
     e = sub.add_parser("eval", help="run a scenario's broken+golden variants and compose check")
     e.add_argument("--id", default="scenario-001")
     e.set_defaults(func=cmd_eval)
+
+    ag = sub.add_parser("agent", help="run a repair agent (baseline|advanced) against a scenario and score it")
+    ag.add_argument("--id", required=True)
+    ag.add_argument("--tier", required=True, choices=["baseline", "advanced"])
+    ag.add_argument("--allow-unexpected", action="store_true",
+                    help="do not exit non-zero when the result misses its expectation")
+    ag.set_defaults(func=cmd_agent)
 
     args = p.parse_args(argv)
     args.func(args)
