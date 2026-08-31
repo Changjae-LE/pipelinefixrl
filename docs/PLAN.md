@@ -1065,7 +1065,35 @@ order; none started before this matrix is approved.
   compose) all PASS; scoped namespace cleanup + `scripts/kind-down.sh` clean —
   no `pfrl-*` namespaces, no kind cluster or containers, `.state/kubeconfig`
   removed, `.state/clusters/` empty, default `~/.kube/config` unchanged.
-- **Next: M8 / scenario-007 — not started.**
+- **M8 / scenario-007 ✅ complete** — commit `7393766`
+  *feat: add deterministic misconfigured ConfigMap reference scenario*. Mandatory
+  pre-implementation gate on `4c7a559`: `A1–A14` (`make e2e-base`, SCORE 100)
+  **and** scenario-001 · scenario-002 · scenario-003 · scenario-004 ·
+  scenario-005 · scenario-006 (each broken / golden / compose) all PASS. Broken
+  run twice → deterministic **SCORE 10** with identical graded outcomes —
+  `charts/app/values.yaml` `config.key` `tier`→`teir` breaks the container's
+  `APP_TIER` `configMapKeyRef` (key absent from the `app-config` ConfigMap) →
+  `CreateContainerConfigError`, pod `Pending` `0/1`; only `helm_release_ok` PASS,
+  `rollout_complete` / `deployment_ready` / `pods_ready` / `endpoints_present` /
+  `http_health_ok` / `config_applied` all FAIL; evidence scan confirmed
+  (`events` contain `couldn't find key` + `app-config`; `pods.json` contains
+  `CreateContainerConfigError`; verified against real artifacts:
+  `state.waiting == {reason: CreateContainerConfigError, message: "couldn't
+  find key teir in ConfigMap <ns>/app-config"}`); universal §7.2 anti-cheat
+  clean both runs; volatile run-id/namespace/image and the ungraded weight-0
+  `no_bad_events` excluded from the determinism assertion. Golden → **SCORE 100**
+  with all eight checks PASS (`config_applied`: `GET / tier='standard'
+  want='standard'` — full chain `values → ConfigMap → configMapKeyRef → env →
+  app` validated); anti-cheat clean (base §7.2 + golden-only
+  `config_wiring_intact` rule — `configMapKeyRef`/`.Values.config.key` retained,
+  `app-config` ConfigMap still templated from `.Values.config.tier`,
+  `app/main.py` still reads `APP_TIER` from env, `config.tier` non-empty);
+  compose-check byte-identical. Post-implementation full regression on the
+  committed harness: `A1–A14` (SCORE 100) **and** scenario-001 · scenario-002 ·
+  scenario-003 · scenario-004 (broken 10 / golden 100 / compose) · scenario-005
+  (broken 50 / golden 100 / compose) · scenario-006 (broken 55 / golden 100 /
+  compose) · scenario-007 (broken 10 / golden 100 / compose) all PASS.
+- **Next: M9 / scenario-008 — not started.**
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
@@ -1075,7 +1103,7 @@ order; none started before this matrix is approved.
 | M5 ✅ | 004 template wiring | no | + 003 | ~15 | ~3.5 |
 | M6 ✅ | 005 Service selector | no | + 004 | ~18 | ~3 |
 | M7 ✅ | 006 runs-as-root | no | + 005 | ~21 | ~3 |
-| M8 | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
+| M8 ✅ | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
 | M9 | 008 log-format regression | no | + 007 | ~28 | ~3 |
 | M10 | 009 CI + health contract | no | + 008 | ~31 | ~5 |
 | M11 | 010 merge conflict | no (harness only) | + 009 | ~36 | ~4 |
