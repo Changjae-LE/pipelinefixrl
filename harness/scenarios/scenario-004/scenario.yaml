@@ -1,0 +1,63 @@
+id: scenario-004
+title: Helm value not wired to the template
+category: helm/templating
+difficulty: medium
+description: >
+  charts/app/templates/deployment.yaml builds the container image reference from
+  an image-tag value that is not wired to anything: it reads a key that the
+  chart's values do not define, piped through `default ""`, so the rendered
+  manifest carries `image: "pipelinefixrl/app:"` (empty tag). `helm upgrade
+  --install` succeeds because Helm does not validate image references, but the
+  kubelet rejects the empty tag with InvalidImageName and the pod stays Pending,
+  0/1, never Ready. The tag the pipeline actually supplies via
+  `--set image.tag=<unique>` is ignored because the template never references it.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-scenario-004
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 45
+  restart_threshold: 0
+
+  # No new scored check and no weight reallocation: the functional backbone is
+  # sufficient (helm 10 / rollout 20 / deployment_ready 20 / pods_ready 15 /
+  # endpoints 15 / http 20 = 100). Broken -> only helm_release_ok PASS -> 10.
+
+  # additive to the base anti-cheat (PROJECT_SPEC 7.2). Blocks "fixing" the
+  # template by hard-coding a tag or removing the required-value guard: the
+  # container image line must still be wired to .Values.image.repository and
+  # .Values.image.tag, keep a `required` guard, and carry no literal tag.
+  anticheat:
+    image_ref_wired: true
+
+  expect:
+    broken:
+      score_max: 10
+      must_pass: [helm_release_ok]
+      must_fail:
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      evidence:
+        events_contains:
+          - "InvalidImageName"
+        pods_json_contains:
+          - "InvalidImageName"
+          - 'pipelinefixrl/app:"'
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      anticheat_clean: true

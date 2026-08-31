@@ -1,0 +1,5 @@
+--- a/charts/app/templates/deployment.yaml
++++ b/charts/app/templates/deployment.yaml
+@@ -21 +21 @@
+-          image: "{{ .Values.image.repository }}:{{ .Values.image.version | default "" }}"
++          image: "{{ .Values.image.repository }}:{{ .Values.image.tagOverride | default (required "image.tag is required and must not be 'latest'" .Values.image.tag) }}"

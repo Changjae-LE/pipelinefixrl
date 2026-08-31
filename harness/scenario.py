@@ -12,6 +12,7 @@ in scenario.yaml.
 
 import json
 import pathlib
+import re
 import shutil
 
 import yaml
@@ -161,6 +162,10 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
       min_memory: {requests: <qty>, limits: <qty>}
           resources.requests/limits blocks must be present and non-empty, and
           their .memory must be >= the given floor.
+      image_ref_wired: true
+          deployment.yaml's container image line must still be wired to
+          .Values.image.repository and .Values.image.tag, keep a `required`
+          guard on the tag, and carry no hard-coded literal tag.
     """
     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
     viol: list[str] = []
@@ -187,6 +192,25 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
                 viol.append(
                     f"resources.{block}.memory {got.get('memory')!r} < floor {floors[block]!r}"
                 )
+
+    if rules.get("image_ref_wired"):
+        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(
+            encoding="utf-8"
+        )
+        img_lines = [ln for ln in dep.splitlines() if ln.lstrip().startswith("image:")]
+        if not img_lines:
+            viol.append("deployment.yaml has no container image: line")
+        else:
+            line = img_lines[0]
+            if ".Values.image.repository" not in line:
+                viol.append("image line no longer references .Values.image.repository")
+            if not re.search(r"\.Values\.image\.tag(?![A-Za-z0-9_])", line):
+                viol.append("image line no longer references .Values.image.tag")
+            if "required" not in line:
+                viol.append("required-value guard on image.tag removed from image line")
+            bare = re.sub(r"\{\{.*?\}\}", "", line)
+            if ":latest" in bare or re.search(r":\s*['\"]?v?\d", bare):
+                viol.append(f"image line hard-codes a literal tag: {line.strip()!r}")
     return viol
 
 
