@@ -174,6 +174,11 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
           podSecurityContext.seccompProfile stays RuntimeDefault,
           securityContext.runAsUser is an integer >= 1000, and deployment.yaml
           adds no privileged/SYS_ADMIN container and no volume mounted at /.
+      config_wiring_intact: true
+          deployment.yaml still sources APP_TIER via configMapKeyRef keyed by
+          .Values.config.key, the app-config ConfigMap is still templated from
+          .Values.config.tier with non-empty data, app/main.py still reads
+          APP_TIER from the environment, and values.yaml config.tier is non-empty.
     """
     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
     viol: list[str] = []
@@ -244,6 +249,20 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
             viol.append("deployment.yaml introduces a privileged / SYS_ADMIN container")
         if re.search(r"^\s*mountPath:\s*/\s*$", dep, re.M):
             viol.append("deployment.yaml mounts a volume at / (fake read-only rootfs)")
+
+    if rules.get("config_wiring_intact"):
+        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
+        if "configMapKeyRef" not in dep or ".Values.config.key" not in dep:
+            viol.append("deployment.yaml no longer sources APP_TIER via configMapKeyRef / .Values.config.key")
+        cm_path = tree / "charts" / "app" / "templates" / "configmap.yaml"
+        cm = cm_path.read_text(encoding="utf-8") if cm_path.exists() else ""
+        if "kind: ConfigMap" not in cm or ".Values.config.tier" not in cm:
+            viol.append("app-config ConfigMap template missing or no longer populated from .Values.config.tier")
+        main_py = (tree / "app" / "main.py").read_text(encoding="utf-8")
+        if 'os.environ.get("APP_TIER"' not in main_py and "os.environ['APP_TIER']" not in main_py:
+            viol.append("app/main.py no longer reads APP_TIER from the environment")
+        if not str((tv.get("config") or {}).get("tier", "")).strip():
+            viol.append("values.yaml config.tier is empty")
     return viol
 
 

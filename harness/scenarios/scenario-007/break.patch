@@ -1,0 +1,5 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -70 +70 @@
+-  key: tier
++  key: teir
