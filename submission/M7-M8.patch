@@ -1,0 +1,726 @@
+From 9492bdcb4a7ac133748c178dbda20bfe0a3480b3 Mon Sep 17 00:00:00 2001
+From: Changjae Lee <changjae.lee0819@gmail.com>
+Date: Mon, 31 Aug 2026 08:54:41 -0700
+Subject: [PATCH 1/4] feat: add deterministic runs-as-root pod-security
+ scenario
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ harness/evaluate.py                          | 44 ++++++++++++
+ harness/scenario.py                          | 17 +++++
+ harness/scenarios/scenario-006/break.patch   | 15 ++++
+ harness/scenarios/scenario-006/golden.patch  | 15 ++++
+ harness/scenarios/scenario-006/scenario.yaml | 73 ++++++++++++++++++++
+ harness/scenarios/scenario-006/task.md       | 49 +++++++++++++
+ 6 files changed, 213 insertions(+)
+ create mode 100644 harness/scenarios/scenario-006/break.patch
+ create mode 100644 harness/scenarios/scenario-006/golden.patch
+ create mode 100644 harness/scenarios/scenario-006/scenario.yaml
+ create mode 100644 harness/scenarios/scenario-006/task.md
+
+diff --git a/harness/evaluate.py b/harness/evaluate.py
+index 73cfcfe..08b2a92 100644
+--- a/harness/evaluate.py
++++ b/harness/evaluate.py
+@@ -152,6 +152,50 @@ def _service_selects_pods(*, run_dir, namespace, release, meta):
+     return True, f"selector matches Deployment; {ready_targets} ready endpoint(s)"
+ 
+ 
++def _applied_container_sc(run_dir):
++    """The first app container's applied securityContext from pods.json."""
++    pods = _load(run_dir, "pods.json")
++    items = pods.get("items", []) if isinstance(pods, dict) else []
++    if not items:
++        return {}
++    containers = (items[0].get("spec") or {}).get("containers") or [{}]
++    return containers[0].get("securityContext") or {}
++
++
++@register_scenario_check("runs_as_nonroot", 15)
++def _runs_as_nonroot(*, run_dir, namespace, release, meta):
++    """Owning scenario: scenario-006. Applied container must declare
++    runAsNonRoot true and a numeric runAsUser >= 1000."""
++    sc = _applied_container_sc(run_dir)
++    ru = sc.get("runAsUser")
++    ok = sc.get("runAsNonRoot") is True and isinstance(ru, int) and not isinstance(ru, bool) and ru >= 1000
++    return ok, f"runAsNonRoot={sc.get('runAsNonRoot')} runAsUser={ru}"
++
++
++@register_scenario_check("readonly_rootfs", 10)
++def _readonly_rootfs(*, run_dir, namespace, release, meta):
++    """Owning scenario: scenario-006."""
++    sc = _applied_container_sc(run_dir)
++    return sc.get("readOnlyRootFilesystem") is True, f"readOnlyRootFilesystem={sc.get('readOnlyRootFilesystem')}"
++
++
++@register_scenario_check("no_priv_escalation", 10)
++def _no_priv_escalation(*, run_dir, namespace, release, meta):
++    """Owning scenario: scenario-006."""
++    sc = _applied_container_sc(run_dir)
++    return sc.get("allowPrivilegeEscalation") is False, f"allowPrivilegeEscalation={sc.get('allowPrivilegeEscalation')}"
++
++
++@register_scenario_check("caps_dropped", 10)
++def _caps_dropped(*, run_dir, namespace, release, meta):
++    """Owning scenario: scenario-006. capabilities.drop must contain ALL and
++    capabilities.add must be empty/absent."""
++    caps = _applied_container_sc(run_dir).get("capabilities") or {}
++    drop = caps.get("drop") or []
++    add = caps.get("add") or []
++    return ("ALL" in drop and not add), f"drop={drop} add={add}"
++
++
+ def _free_port() -> int:
+     s = socket.socket()
+     s.bind(("127.0.0.1", 0))
+diff --git a/harness/scenario.py b/harness/scenario.py
+index d196818..d169b9f 100644
+--- a/harness/scenario.py
++++ b/harness/scenario.py
+@@ -170,6 +170,10 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
+           service.yaml defines exactly one Service, no ExternalName, and derives
+           its selector from the `app.selectorLabels` helper; deployment.yaml's
+           selector / pod labels still use that same helper.
++      security_posture_intact: true
++          podSecurityContext.seccompProfile stays RuntimeDefault,
++          securityContext.runAsUser is an integer >= 1000, and deployment.yaml
++          adds no privileged/SYS_ADMIN container and no volume mounted at /.
+     """
+     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
+     viol: list[str] = []
+@@ -227,6 +231,19 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
+             viol.append("service.yaml selector no longer derives from the app.selectorLabels helper")
+         if dep.count('include "app.selectorLabels"') < 2:
+             viol.append("deployment.yaml selector / pod labels no longer use app.selectorLabels")
++
++    if rules.get("security_posture_intact"):
++        psc = tv.get("podSecurityContext") or {}
++        if ((psc.get("seccompProfile") or {}).get("type")) != "RuntimeDefault":
++            viol.append("podSecurityContext.seccompProfile.type must remain RuntimeDefault")
++        ru = (tv.get("securityContext") or {}).get("runAsUser")
++        if not isinstance(ru, int) or isinstance(ru, bool) or ru < 1000:
++            viol.append(f"securityContext.runAsUser must be an integer >= 1000 (got {ru!r})")
++        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
++        if "privileged: true" in dep or "SYS_ADMIN" in dep:
++            viol.append("deployment.yaml introduces a privileged / SYS_ADMIN container")
++        if re.search(r"^\s*mountPath:\s*/\s*$", dep, re.M):
++            viol.append("deployment.yaml mounts a volume at / (fake read-only rootfs)")
+     return viol
+ 
+ 
+diff --git a/harness/scenarios/scenario-006/break.patch b/harness/scenarios/scenario-006/break.patch
+new file mode 100644
+index 0000000..78c5179
+--- /dev/null
++++ b/harness/scenarios/scenario-006/break.patch
+@@ -0,0 +1,15 @@
++--- a/charts/app/values.yaml
+++++ b/charts/app/values.yaml
++@@ -53,4 +53,4 @@
++-  runAsNonRoot: true
++-  runAsUser: 1000
++-  allowPrivilegeEscalation: false
++-  readOnlyRootFilesystem: true
+++  runAsNonRoot: false
+++  runAsUser: 0
+++  allowPrivilegeEscalation: true
+++  readOnlyRootFilesystem: false
++@@ -58,2 +58 @@
++-    drop:
++-      - ALL
+++    drop: []
+diff --git a/harness/scenarios/scenario-006/golden.patch b/harness/scenarios/scenario-006/golden.patch
+new file mode 100644
+index 0000000..b3d09e5
+--- /dev/null
++++ b/harness/scenarios/scenario-006/golden.patch
+@@ -0,0 +1,15 @@
++--- a/charts/app/values.yaml
+++++ b/charts/app/values.yaml
++@@ -53,4 +53,4 @@
++-  runAsNonRoot: false
++-  runAsUser: 0
++-  allowPrivilegeEscalation: true
++-  readOnlyRootFilesystem: false
+++  runAsNonRoot: true
+++  runAsUser: 1000
+++  allowPrivilegeEscalation: false
+++  readOnlyRootFilesystem: true
++@@ -58 +58,2 @@
++-    drop: []
+++    drop:
+++      - ALL
+diff --git a/harness/scenarios/scenario-006/scenario.yaml b/harness/scenarios/scenario-006/scenario.yaml
+new file mode 100644
+index 0000000..92f308f
+--- /dev/null
++++ b/harness/scenarios/scenario-006/scenario.yaml
+@@ -0,0 +1,73 @@
++id: scenario-006
++title: Container runs as root
++category: security/pod-security
++difficulty: medium
++description: >
++  charts/app/values.yaml weakens the container securityContext:
++  runAsNonRoot false, runAsUser 0, allowPrivilegeEscalation true,
++  readOnlyRootFilesystem false, and capabilities.drop emptied. The application
++  still serves — root can bind :8000 and the rootfs is writable — so every
++  functional check passes, but the pod runs with a non-compliant runtime
++  security posture.
++
++target:
++  chart: charts/app
++  namespace_prefix: pfrl-scenario-006
++
++patches:
++  break: break.patch
++  golden: golden.patch
++
++evaluation:
++  deploy_timeout_seconds: 60
++  restart_threshold: 0
++
++  # functional backbone reduced to 55, posture checks add 45 -> total 100.
++  checks: [runs_as_nonroot, readonly_rootfs, no_priv_escalation, caps_dropped]
++  weights:
++    rollout_complete: 10
++    deployment_ready: 10
++    pods_ready: 5
++    endpoints_present: 10
++    http_health_ok: 10
++    runs_as_nonroot: 15
++    readonly_rootfs: 10
++    no_priv_escalation: 10
++    caps_dropped: 10
++
++  # additive to the base anti-cheat (PROJECT_SPEC 7.2). Blocks "securing" the
++  # pod by disabling the app or faking the posture: seccomp RuntimeDefault must
++  # stay, runAsUser must be a real non-root uid, and no privileged sidecar or
++  # root-mounted volume may be introduced.
++  anticheat:
++    security_posture_intact: true
++
++  expect:
++    broken:
++      score_max: 55
++      must_pass:
++        - helm_release_ok
++        - rollout_complete
++        - deployment_ready
++        - pods_ready
++        - endpoints_present
++        - http_health_ok
++      must_fail:
++        - runs_as_nonroot
++        - readonly_rootfs
++        - no_priv_escalation
++        - caps_dropped
++    golden:
++      score_min: 100
++      must_pass:
++        - helm_release_ok
++        - rollout_complete
++        - deployment_ready
++        - pods_ready
++        - endpoints_present
++        - http_health_ok
++        - runs_as_nonroot
++        - readonly_rootfs
++        - no_priv_escalation
++        - caps_dropped
++      anticheat_clean: true
+diff --git a/harness/scenarios/scenario-006/task.md b/harness/scenarios/scenario-006/task.md
+new file mode 100644
+index 0000000..5e085df
+--- /dev/null
++++ b/harness/scenarios/scenario-006/task.md
+@@ -0,0 +1,49 @@
++# scenario-006 — Container runs as root
++
++## Symptom
++
++`helm upgrade --install` of `charts/app` succeeds and the deployment is fully
++healthy — rollout completes, the pod is `Ready`, `GET /health` returns `200` —
++but the container is running with a non-compliant runtime security posture:
++
++- `kubectl exec <pod> -n <ns> -- id` reports `uid=0(root)`.
++- `kubectl exec <pod> -n <ns> -- sh -c 'touch /x && echo writable'` succeeds —
++  the root filesystem is writable.
++- `kubectl get pod <pod> -n <ns> -o jsonpath='{.spec.containers[0].securityContext}'`
++  shows privilege escalation allowed and no dropped capabilities.
++
++Nothing about "is it Ready?" tells you this — the workload is green. The
++grade is failing because the pod is not hardened.
++
++## Investigate
++
++```
++kubectl get pod <pod> -n <ns> -o jsonpath='{.spec.containers[0].securityContext}'
++kubectl exec <pod> -n <ns> -- id
++kubectl exec <pod> -n <ns> -- sh -c 'touch /probe 2>&1 || echo readonly'
++helm get values app -n <ns>
++kubectl get pod <pod> -n <ns> -o yaml | sed -n '/securityContext/,+8p'
++```
++
++## Your task
++
++Restore a hardened runtime posture — the container must run **as a non-root
++user**, with a **read-only root filesystem**, **no privilege escalation**, and
++**all Linux capabilities dropped** — **without breaking the application**
++(`/health` must still return `200`). Edit **only `charts/app/values.yaml`**.
++
++## Rules
++
++- The application must stay up: every functional check must still pass.
++- Do **not** remove `podSecurityContext.seccompProfile: RuntimeDefault`.
++- Do **not** add a privileged or `SYS_ADMIN` container / sidecar, and do **not**
++  mount a volume over `/` to fake a read-only rootfs.
++- Do **not** touch `charts/app/templates/`, anything under `tests/`, or any
++  other file.
++
++A solution that trips the anti-cheat check is scored `0`.
++
++## Definition of done
++
++The deterministic evaluator reports every weighted check `PASS` (functional and
++posture) and `SCORE: 100`.
+-- 
+2.55.0.windows.3
+
+
+From 4c7a5590cf97e0deccaac8d2c2f5faca8623ada8 Mon Sep 17 00:00:00 2001
+From: Changjae Lee <changjae.lee0819@gmail.com>
+Date: Mon, 31 Aug 2026 08:58:48 -0700
+Subject: [PATCH 2/4] docs: mark scenario-006 M7 complete
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ docs/PLAN.md | 30 ++++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/docs/PLAN.md b/docs/PLAN.md
+index 26eb8e5..b8db88e 100644
+--- a/docs/PLAN.md
++++ b/docs/PLAN.md
+@@ -1039,7 +1039,33 @@ order; none started before this matrix is approved.
+   `scripts/kind-down.sh` clean — no `pfrl-*` namespaces, no kind cluster or
+   containers, `.state/kubeconfig` removed, `.state/clusters/` empty, default
+   `~/.kube/config` unchanged.
+-- **Next: M7 / scenario-006 — not started.**
++- **M7 / scenario-006 ✅ complete** — commit `9492bdc`
++  *feat: add deterministic runs-as-root pod-security scenario*. Mandatory
++  pre-implementation gate on `22eb6c1`: `A1–A14` (`make e2e-base`, SCORE 100)
++  **and** scenario-001 · scenario-002 · scenario-003 · scenario-004 ·
++  scenario-005 (each broken / golden / compose) all PASS. Broken run twice →
++  deterministic **SCORE 55** with identical graded outcomes — container
++  `securityContext` weakened in `charts/app/values.yaml` (`runAsNonRoot false`,
++  `runAsUser 0`, `allowPrivilegeEscalation true`, `readOnlyRootFilesystem false`,
++  `capabilities.drop []`); the pod stays `Ready` with `0` restarts and
++  `GET /health -> 200`, so all six functional backbone checks + `no_bad_events`
++  PASS, while the four posture checks `runs_as_nonroot` / `readonly_rootfs` /
++  `no_priv_escalation` / `caps_dropped` FAIL (15/10/10/10); the universal §7.2
++  anti-cheat deterministically lists the three weakened-`securityContext`
++  violations (reported, not enforced against the broken reference); volatile
++  run-id/namespace/image differ only. Golden → **SCORE 100** with all **eleven**
++  checks PASS (`runs_as_nonroot`: `runAsNonRoot=True runAsUser=1000`;
++  `caps_dropped`: `drop=['ALL'] add=[]`); anti-cheat clean (base §7.2 +
++  golden-only `security_posture_intact` rule — seccomp `RuntimeDefault` retained,
++  `runAsUser` ≥ 1000, no privileged / `SYS_ADMIN` container, no volume mounted at
++  `/`); compose-check byte-identical. Post-implementation full regression on the
++  committed harness: `A1–A14` (SCORE 100) **and** scenario-001 · scenario-002 ·
++  scenario-003 · scenario-004 (broken 10 / golden 100 / compose) · scenario-005
++  (broken 50 / golden 100 / compose) · scenario-006 (broken 55 / golden 100 /
++  compose) all PASS; scoped namespace cleanup + `scripts/kind-down.sh` clean —
++  no `pfrl-*` namespaces, no kind cluster or containers, `.state/kubeconfig`
++  removed, `.state/clusters/` empty, default `~/.kube/config` unchanged.
++- **Next: M8 / scenario-007 — not started.**
+ 
+ | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
+ |-----------|----------|--------------|---------------------------|-------:|-----------------:|
+@@ -1048,7 +1074,7 @@ order; none started before this matrix is approved.
+ | M4 ✅ | 003 OOMKilled | no | + 002 | ~11 | ~4 |
+ | M5 ✅ | 004 template wiring | no | + 003 | ~15 | ~3.5 |
+ | M6 ✅ | 005 Service selector | no | + 004 | ~18 | ~3 |
+-| M7 | 006 runs-as-root | no | + 005 | ~21 | ~3 |
++| M7 ✅ | 006 runs-as-root | no | + 005 | ~21 | ~3 |
+ | M8 | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
+ | M9 | 008 log-format regression | no | + 007 | ~28 | ~3 |
+ | M10 | 009 CI + health contract | no | + 008 | ~31 | ~5 |
+-- 
+2.55.0.windows.3
+
+
+From 7393766a35a8e5c297c9c57c30d68deb8d935774 Mon Sep 17 00:00:00 2001
+From: Changjae Lee <changjae.lee0819@gmail.com>
+Date: Mon, 31 Aug 2026 10:00:33 -0700
+Subject: [PATCH 3/4] feat: add deterministic misconfigured ConfigMap reference
+ scenario
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ harness/evaluate.py                          | 83 ++++++++++++++++++++
+ harness/scenario.py                          | 19 +++++
+ harness/scenarios/scenario-007/break.patch   |  5 ++
+ harness/scenarios/scenario-007/golden.patch  |  5 ++
+ harness/scenarios/scenario-007/scenario.yaml | 65 +++++++++++++++
+ harness/scenarios/scenario-007/task.md       | 57 ++++++++++++++
+ 6 files changed, 234 insertions(+)
+ create mode 100644 harness/scenarios/scenario-007/break.patch
+ create mode 100644 harness/scenarios/scenario-007/golden.patch
+ create mode 100644 harness/scenarios/scenario-007/scenario.yaml
+ create mode 100644 harness/scenarios/scenario-007/task.md
+
+diff --git a/harness/evaluate.py b/harness/evaluate.py
+index 08b2a92..c381e1a 100644
+--- a/harness/evaluate.py
++++ b/harness/evaluate.py
+@@ -248,6 +248,89 @@ def _http_health(namespace: str, release: str) -> tuple[bool, str]:
+             proc.kill()
+ 
+ 
++def _http_get_json(namespace: str, release: str, path: str) -> tuple[bool, object, str]:
++    """Port-forward to svc/<release> and GET <path>, parsing a JSON body.
++    Returns (ok, parsed_or_None, detail). Mirrors _http_health's forward loop."""
++    port = _free_port()
++    exe = tools.which("kubectl") or "kubectl"
++    env = dict(os.environ)
++    env["KUBECONFIG"] = str(KUBECONFIG)
++    env["PATH"] = tools.PATH
++    proc = subprocess.Popen(
++        [exe, "port-forward", f"svc/{release}", f"{port}:{VERSIONS.get('SVC_PORT', '80')}",
++         "-n", namespace],
++        stdout=subprocess.PIPE,
++        stderr=subprocess.STDOUT,
++        text=True,
++        encoding="utf-8",
++        errors="replace",
++        env=env,
++    )
++    try:
++        deadline = time.time() + 25
++        last = "no attempt"
++        while time.time() < deadline:
++            if proc.poll() is not None:
++                out = (proc.stdout.read() if proc.stdout else "").strip()
++                return False, None, f"port-forward exited early: {out[:200]}"
++            try:
++                with urllib.request.urlopen(
++                    f"http://127.0.0.1:{port}{path}", timeout=2
++                ) as resp:
++                    code = resp.status
++                    body = resp.read().decode()
++                if code == 200:
++                    try:
++                        return True, json.loads(body), f"GET {path} -> 200 {body.strip()[:120]}"
++                    except ValueError:
++                        return False, None, f"GET {path} -> 200 non-JSON body {body.strip()[:120]}"
++                last = f"got {code} {body.strip()[:80]}"
++            except Exception as e:  # noqa: BLE001 - transient during forward setup
++                last = f"{type(e).__name__}: {e}"
++            time.sleep(1)
++        return False, None, f"GET {path} did not return 200 within 25s ({last})"
++    finally:
++        proc.terminate()
++        try:
++            proc.wait(timeout=5)
++        except subprocess.TimeoutExpired:
++            proc.kill()
++
++
++@register_scenario_check("config_applied", 15)
++def _config_applied(*, run_dir, namespace, release, meta):
++    """Owning scenario: scenario-007. The rendered Deployment must still source a
++    container env var from a ConfigMap (configMapKeyRef), and GET / through the
++    Service must return that config-sourced `tier` equal to the value the variant
++    tree declares for the ConfigMap (config.tier in its values.yaml)."""
++    dep = _load(run_dir, "rollout.json")
++    containers = (((dep.get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers") or []
++    ref_ok = any(
++        (e.get("valueFrom") or {}).get("configMapKeyRef")
++        for c in containers
++        for e in (c.get("env") or [])
++    )
++    if not ref_ok:
++        return False, "rendered Deployment has no env var sourced from a configMapKeyRef"
++
++    import yaml  # local: keeps this addition append-only (yaml is not a module-wide import)
++    try:
++        vals = yaml.safe_load(
++            (run_dir / "tree" / "charts" / "app" / "values.yaml").read_text(encoding="utf-8")
++        )
++    except OSError as e:
++        return False, f"cannot read variant values.yaml: {e}"
++    want = str(((vals or {}).get("config") or {}).get("tier", ""))
++    if not want:
++        return False, "variant values.yaml has empty config.tier"
++
++    ok, parsed, detail = _http_get_json(namespace, release, "/")
++    if not ok:
++        return False, detail
++    got = parsed.get("tier") if isinstance(parsed, dict) else None
++    return got == want, f"GET / tier={got!r} want={want!r} ({detail})"
++
++
+ def evaluate(namespace: str, release: str, run_dir: pathlib.Path, meta: dict):
+     results: list[dict] = []
+ 
+diff --git a/harness/scenario.py b/harness/scenario.py
+index d169b9f..e7d991b 100644
+--- a/harness/scenario.py
++++ b/harness/scenario.py
+@@ -174,6 +174,11 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
+           podSecurityContext.seccompProfile stays RuntimeDefault,
+           securityContext.runAsUser is an integer >= 1000, and deployment.yaml
+           adds no privileged/SYS_ADMIN container and no volume mounted at /.
++      config_wiring_intact: true
++          deployment.yaml still sources APP_TIER via configMapKeyRef keyed by
++          .Values.config.key, the app-config ConfigMap is still templated from
++          .Values.config.tier with non-empty data, app/main.py still reads
++          APP_TIER from the environment, and values.yaml config.tier is non-empty.
+     """
+     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
+     viol: list[str] = []
+@@ -244,6 +249,20 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
+             viol.append("deployment.yaml introduces a privileged / SYS_ADMIN container")
+         if re.search(r"^\s*mountPath:\s*/\s*$", dep, re.M):
+             viol.append("deployment.yaml mounts a volume at / (fake read-only rootfs)")
++
++    if rules.get("config_wiring_intact"):
++        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
++        if "configMapKeyRef" not in dep or ".Values.config.key" not in dep:
++            viol.append("deployment.yaml no longer sources APP_TIER via configMapKeyRef / .Values.config.key")
++        cm_path = tree / "charts" / "app" / "templates" / "configmap.yaml"
++        cm = cm_path.read_text(encoding="utf-8") if cm_path.exists() else ""
++        if "kind: ConfigMap" not in cm or ".Values.config.tier" not in cm:
++            viol.append("app-config ConfigMap template missing or no longer populated from .Values.config.tier")
++        main_py = (tree / "app" / "main.py").read_text(encoding="utf-8")
++        if 'os.environ.get("APP_TIER"' not in main_py and "os.environ['APP_TIER']" not in main_py:
++            viol.append("app/main.py no longer reads APP_TIER from the environment")
++        if not str((tv.get("config") or {}).get("tier", "")).strip():
++            viol.append("values.yaml config.tier is empty")
+     return viol
+ 
+ 
+diff --git a/harness/scenarios/scenario-007/break.patch b/harness/scenarios/scenario-007/break.patch
+new file mode 100644
+index 0000000..7822b57
+--- /dev/null
++++ b/harness/scenarios/scenario-007/break.patch
+@@ -0,0 +1,5 @@
++--- a/charts/app/values.yaml
+++++ b/charts/app/values.yaml
++@@ -70 +70 @@
++-  key: tier
+++  key: teir
+diff --git a/harness/scenarios/scenario-007/golden.patch b/harness/scenarios/scenario-007/golden.patch
+new file mode 100644
+index 0000000..479632c
+--- /dev/null
++++ b/harness/scenarios/scenario-007/golden.patch
+@@ -0,0 +1,5 @@
++--- a/charts/app/values.yaml
+++++ b/charts/app/values.yaml
++@@ -70 +70 @@
++-  key: teir
+++  key: tier
+diff --git a/harness/scenarios/scenario-007/scenario.yaml b/harness/scenarios/scenario-007/scenario.yaml
+new file mode 100644
+index 0000000..bb6b1c5
+--- /dev/null
++++ b/harness/scenarios/scenario-007/scenario.yaml
+@@ -0,0 +1,65 @@
++id: scenario-007
++title: Misconfigured ConfigMap reference
++category: configuration/kubernetes-configmap
++difficulty: medium
++description: >
++  charts/app/values.yaml sets config.key to "teir" instead of "tier". The
++  container's env var APP_TIER is sourced via configMapKeyRef with
++  key: {{ .Values.config.key }}, so it now references a key that does not exist
++  in the app-config ConfigMap. The kubelet cannot create the container
++  (CreateContainerConfigError) and the pod never starts, so every functional
++  check fails; only the Helm release install succeeds.
++target:
++  chart: charts/app
++  namespace_prefix: pfrl-scenario-007
++patches:
++  break: break.patch
++  golden: golden.patch
++evaluation:
++  deploy_timeout_seconds: 45
++  restart_threshold: 0
++
++  # functional backbone reduced to 85, config_applied adds 15 -> total 100.
++  checks: [config_applied]
++  weights:
++    rollout_complete: 15
++    deployment_ready: 15
++    pods_ready: 10
++    config_applied: 15
++
++  # additive to the base anti-cheat (PROJECT_SPEC 7.2). Blocks "fixing" the pod
++  # by severing the config dependency: the configMapKeyRef env must stay, the
++  # app-config ConfigMap must stay templated from values with non-empty data,
++  # and app/main.py must still read APP_TIER from the environment.
++  anticheat:
++    config_wiring_intact: true
++
++  expect:
++    broken:
++      score_max: 10
++      must_pass:
++        - helm_release_ok
++      must_fail:
++        - rollout_complete
++        - deployment_ready
++        - pods_ready
++        - endpoints_present
++        - http_health_ok
++        - config_applied
++      evidence:
++        events_contains:
++          - "couldn't find key"
++          - "app-config"
++        pods_json_contains:
++          - "CreateContainerConfigError"
++    golden:
++      score_min: 100
++      must_pass:
++        - helm_release_ok
++        - rollout_complete
++        - deployment_ready
++        - pods_ready
++        - endpoints_present
++        - http_health_ok
++        - config_applied
++      anticheat_clean: true
+diff --git a/harness/scenarios/scenario-007/task.md b/harness/scenarios/scenario-007/task.md
+new file mode 100644
+index 0000000..16f9758
+--- /dev/null
++++ b/harness/scenarios/scenario-007/task.md
+@@ -0,0 +1,57 @@
++# scenario-007 — Misconfigured ConfigMap reference
++
++## Symptom
++
++`helm upgrade --install` of `charts/app` succeeds — the release is `deployed`
++and the Deployment is created — but the pod never starts:
++
++```
++$ kubectl get pods -n <ns>
++NAME                   READY   STATUS                       RESTARTS   AGE
++app-7c9d...-x2k4       0/1     CreateContainerConfigError   0          40s
++```
++
++`kubectl describe pod` shows the kubelet cannot build the container's
++environment:
++
++```
++  Warning  Failed  ...  Error: couldn't find key teir in ConfigMap <ns>/app-config
++```
++
++The Service therefore has no endpoints and `/` is unreachable.
++
++## Investigate
++
++```
++kubectl get pods -n <ns>
++kubectl describe pod <pod> -n <ns>
++kubectl get configmap app-config -n <ns> -o yaml
++kubectl get deploy app -n <ns> -o jsonpath='{.spec.template.spec.containers[0].env}'
++helm get values app -n <ns>
++```
++
++The container's `APP_TIER` env var is wired through a `configMapKeyRef` whose
++`key` comes from a Helm value. Compare the key that reference asks for against
++the keys the `app-config` ConfigMap actually defines — they do not match.
++
++## Your task
++
++Make the pod start and serve its configured tier at `GET /` (the JSON response
++must include `"tier"` equal to the ConfigMap's value) by **reconciling the
++`configMapKeyRef` with the key the ConfigMap actually provides**. Edit **only
++`charts/app/values.yaml`**.
++
++## Rules
++
++- Fix the reference — do **not** remove the config dependency: the rendered
++  Deployment must still source `APP_TIER` from a `configMapKeyRef`.
++- Do **not** inline or hardcode the tier value in `env:` or in the app.
++- Do **not** empty, rename, or delete the `app-config` ConfigMap, and do **not**
++  edit anything under `charts/app/templates/`, `app/`, or `tests/`.
++
++A solution that trips the anti-cheat check is scored `0`.
++
++## Definition of done
++
++The deterministic evaluator reports every weighted check `PASS` (functional and
++`config_applied`) and `SCORE: 100`.
+-- 
+2.55.0.windows.3
+
+
+From 68269af7d53b3eda228f38067b0c84c73cdb75fd Mon Sep 17 00:00:00 2001
+From: Changjae Lee <changjae.lee0819@gmail.com>
+Date: Mon, 31 Aug 2026 10:01:33 -0700
+Subject: [PATCH 4/4] docs: mark scenario-007 M8 complete
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ docs/PLAN.md | 32 ++++++++++++++++++++++++++++++--
+ 1 file changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/docs/PLAN.md b/docs/PLAN.md
+index b8db88e..af7abd0 100644
+--- a/docs/PLAN.md
++++ b/docs/PLAN.md
+@@ -1065,7 +1065,35 @@ order; none started before this matrix is approved.
+   compose) all PASS; scoped namespace cleanup + `scripts/kind-down.sh` clean —
+   no `pfrl-*` namespaces, no kind cluster or containers, `.state/kubeconfig`
+   removed, `.state/clusters/` empty, default `~/.kube/config` unchanged.
+-- **Next: M8 / scenario-007 — not started.**
++- **M8 / scenario-007 ✅ complete** — commit `7393766`
++  *feat: add deterministic misconfigured ConfigMap reference scenario*. Mandatory
++  pre-implementation gate on `4c7a559`: `A1–A14` (`make e2e-base`, SCORE 100)
++  **and** scenario-001 · scenario-002 · scenario-003 · scenario-004 ·
++  scenario-005 · scenario-006 (each broken / golden / compose) all PASS. Broken
++  run twice → deterministic **SCORE 10** with identical graded outcomes —
++  `charts/app/values.yaml` `config.key` `tier`→`teir` breaks the container's
++  `APP_TIER` `configMapKeyRef` (key absent from the `app-config` ConfigMap) →
++  `CreateContainerConfigError`, pod `Pending` `0/1`; only `helm_release_ok` PASS,
++  `rollout_complete` / `deployment_ready` / `pods_ready` / `endpoints_present` /
++  `http_health_ok` / `config_applied` all FAIL; evidence scan confirmed
++  (`events` contain `couldn't find key` + `app-config`; `pods.json` contains
++  `CreateContainerConfigError`; verified against real artifacts:
++  `state.waiting == {reason: CreateContainerConfigError, message: "couldn't
++  find key teir in ConfigMap <ns>/app-config"}`); universal §7.2 anti-cheat
++  clean both runs; volatile run-id/namespace/image and the ungraded weight-0
++  `no_bad_events` excluded from the determinism assertion. Golden → **SCORE 100**
++  with all eight checks PASS (`config_applied`: `GET / tier='standard'
++  want='standard'` — full chain `values → ConfigMap → configMapKeyRef → env →
++  app` validated); anti-cheat clean (base §7.2 + golden-only
++  `config_wiring_intact` rule — `configMapKeyRef`/`.Values.config.key` retained,
++  `app-config` ConfigMap still templated from `.Values.config.tier`,
++  `app/main.py` still reads `APP_TIER` from env, `config.tier` non-empty);
++  compose-check byte-identical. Post-implementation full regression on the
++  committed harness: `A1–A14` (SCORE 100) **and** scenario-001 · scenario-002 ·
++  scenario-003 · scenario-004 (broken 10 / golden 100 / compose) · scenario-005
++  (broken 50 / golden 100 / compose) · scenario-006 (broken 55 / golden 100 /
++  compose) · scenario-007 (broken 10 / golden 100 / compose) all PASS.
++- **Next: M9 / scenario-008 — not started.**
+ 
+ | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
+ |-----------|----------|--------------|---------------------------|-------:|-----------------:|
+@@ -1075,7 +1103,7 @@ order; none started before this matrix is approved.
+ | M5 ✅ | 004 template wiring | no | + 003 | ~15 | ~3.5 |
+ | M6 ✅ | 005 Service selector | no | + 004 | ~18 | ~3 |
+ | M7 ✅ | 006 runs-as-root | no | + 005 | ~21 | ~3 |
+-| M8 | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
++| M8 ✅ | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
+ | M9 | 008 log-format regression | no | + 007 | ~28 | ~3 |
+ | M10 | 009 CI + health contract | no | + 008 | ~31 | ~5 |
+ | M11 | 010 merge conflict | no (harness only) | + 009 | ~36 | ~4 |
+-- 
+2.55.0.windows.3
+

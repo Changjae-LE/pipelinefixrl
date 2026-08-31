@@ -69,7 +69,7 @@ Two repair-agent tiers run against the **same** environment and are scored by th
 | Tier | What it is | How it fixes |
 |---|---|---|
 | **baseline** | offline, no-LLM heuristic (`harness/agents/fix_agent.py`) | knows a few common single-token misconfigurations (probe-path typo, ConfigMap-key typo) and edits `charts/app/values.yaml`; submits **no change** for anything outside that table |
-| **advanced** | the Claude Code agentic workflow | reads `task.md` + live `kubectl describe` / `get events` on the broken deployment, reasons across the Helm/Kubernetes object graph, edits the chart. It authored every scenario's reference fix and anti-cheat rules (see git history + `.state/submission/agent-trajectory.jsonl`); this module replays its converged, anti-cheat-clean fix so the tier is runnable and scored |
+| **advanced** | the Claude Code agentic workflow | reads `task.md` + live `kubectl describe` / `get events` on the broken deployment, reasons across the Helm/Kubernetes object graph, edits the chart. It authored every scenario's reference fix and anti-cheat rules (see git history + `submission/agent-trajectory.jsonl`); this module replays its converged, anti-cheat-clean fix so the tier is runnable and scored |
 
 ```bash
 make kind-up
@@ -102,7 +102,7 @@ make eval-agents AGENT_SID=scenario-00N    # + baseline + advanced scored runs
 
 Per-milestone evidence (scores, determinism, regression, teardown) is recorded in
 [`docs/PLAN.md`](docs/PLAN.md) §11.8. Full build trajectory:
-`.state/submission/agent-trajectory.jsonl`.
+`submission/agent-trajectory.jsonl`.
 
 ## Improvement changelog
 
