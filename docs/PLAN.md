@@ -1233,6 +1233,47 @@ order; none started before this matrix is approved.
     classes falls through to a visible `golden_fallback`. The derived
     security-context / image-ref repairs apply a standard hardened / canonical
     form (coincides with `golden`, constructed from K8s/Helm knowledge).
+- **Improvement 1 / Foundation ✅** — commit
+  `d786ace5323b8774fbf2552acb0a29b7c30ba10c` (branch `continued-development`)
+  *refactor: split evaluate/scenario into checks/patching/anticheat packages +
+  declarative anti-cheat*.
+  - **Refactor.** `harness/evaluate.py` **724 → 72 lines** — check
+    implementations moved verbatim into the `harness/checks/` package
+    (`_util` / `backbone` / `security` / `config` / `observability` / `cicd` /
+    `build`); check names, weights, scoring semantics and the registry contract
+    unchanged; `evaluate.py` keeps `evaluate()` + `is_healthy()` and re-exports
+    moved names so `harness.evaluate` stays a stable import point.
+    `harness/scenario.py` **699 → 401 lines** — `harness/patching.py` (tree
+    copy, patch apply, frozen-subtree guard, `tree_matches_base` behind
+    compose-check) and `harness/anticheat.py` (`universal_anticheat` + a
+    declarative, **fail-closed** rule registry: an `evaluation.anticheat` key
+    that is not a registered rule raises `ValueError`; `_RULE_ORDER` keeps the
+    9 rules' fixed order). `harness/run.py` byte-unchanged.
+  - **Fast suite.** **147 new deterministic fast tests** in `tests_meta/`
+    (154 with the app's own `tests/`), ~4 s, requiring **no Docker / kind /
+    Kubernetes / network / system `patch` executable** (pure-Python unified-diff
+    applier `tests_meta/_diffapply.py`, validated to round-trip all 10 real
+    scenario patch pairs). Kept outside `tests/` deliberately: `_copy_base_tree`
+    sweeps all of `tests/` into every scenario tree, and scenario-009's
+    `ci_gate_pass` runs the tree's own pytest.
+  - **CI / dev loop.** `.github/workflows/ci.yml` (push/PR: ruff + fast tests +
+    helm lint + docker build; no kind, no secrets) and `e2e.yml`
+    (`workflow_dispatch`-only full regression); Ruff `F`/`B`/`UP` with three
+    pre-existing out-of-scope violations pinned via per-file-ignores (no mass
+    edit); `make test-fast` / `lint-py` / `compose-all` / `quick`; existing
+    public Make targets unchanged.
+  - **Validation.** Fresh pre-refactor runtime baseline captured before any
+    code change (scenario-001/006/008/010 broken+golden); Phase 4 compare on
+    the refactored harness = **zero graded-field differences** across all
+    eight reference runs. Phase 5 full regression green: `make e2e-base` +
+    scenario-001…010 broken/golden/compose + agent matrix — **broken scores
+    unchanged** (10/10/10/10/50/55/10/65/50/0), **golden all 100**, compose all
+    byte-identical, **baseline 7/10**, **advanced 10/10 `derived`,
+    `golden_fallback` 0**, provenance schema unchanged. Teardown + integrity
+    clean; `master` unchanged at
+    `fc8f7e8c8fb832c392dd40e625ce2ffc53519ff9`;
+    `pipelinefixrl-submission.zip` untouched. Module map + extension guide:
+    `docs/ARCHITECTURE.md`.
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|

@@ -29,6 +29,14 @@ the micro1 Agentic Workflows Hackathon.
 - **Repair agents** — `baseline` (offline no-LLM heuristic, 7/10) and `advanced`
   (deriving fixer, **10/10 derived**, golden replay only as a visible fallback);
   see "Baseline & advanced solutions". On `continued-development`.
+- **Improvement 1 — Foundation** — harness modularized (`harness/checks/`
+  package, `harness/patching.py`, `harness/anticheat.py` with a declarative
+  **fail-closed** anti-cheat registry); 147 deterministic fast unit tests in
+  `tests_meta/` (no Docker/kind/Kubernetes/network/system `patch`); Ruff +
+  GitHub Actions CI; `make test-fast` / `lint-py` / `quick`. Pure refactor —
+  behavior preserved (Phase 4 fresh-baseline compare: 0 graded-field
+  differences). Module layout: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+  On `continued-development`.
 
 ## Prerequisites
 
@@ -185,9 +193,10 @@ prior scenario **before** commit (evidence: `docs/PLAN.md` §11.8):
 | **M10** | `4ebb9c8` `c2c9915` | scenario-009 — CI + health contract; `ci_gate_pass` runs the real `scripts/ci.sh` from the ephemeral tree; `_TREE_PATHS` += `scripts/`+`config/` + `_assert_frozen_subtrees` guard + `ci_contract_intact` anti-cheat | broken ×2 =50 / golden 100 / compose; +A1–A14, s001–009; integrity probes 1–6 |
 | **M11** | `eda6087` `af83069` | scenario-010 — unresolved merge conflict; `image_build_ok` + `git_tree_resolved` checks; `_finish_build_failure` completed per §11.4 + `merge_resolved_cleanly` anti-cheat | broken ×2 =0 / golden 100 / compose; +A1–A14, s001–010 |
 | agents (v2) | `4a4bc3e` | advanced becomes a **deriving fixer** (10 fault-class detectors, scenario-visible evidence only, golden replay only as explicit provenance-recorded fallback); baseline broadened to 7/10; `harness agent-matrix` + `make agents-matrix` | matrix: **advanced 10/10 derived**, baseline 7/10; static + runtime golden-boundary probes; `make e2e-base` + s001–010 broken/golden/compose + baseline + advanced all green |
+| **Improvement 1** | `d786ace` | foundation refactor — `harness/evaluate.py` 724→72 and `harness/scenario.py` 699→401 lines; checks split into `harness/checks/` + `harness/patching.py` + `harness/anticheat.py` (declarative **fail-closed** anti-cheat registry); 147 deterministic fast tests in `tests_meta/` (~4 s, no Docker/kind/K8s/network/system `patch`); Ruff; GitHub Actions `ci.yml` (fast push/PR gate) + `e2e.yml` (manual full regression); `make test-fast`/`lint-py`/`compose-all`/`quick`; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | pure refactor: fresh pre-refactor runtime baseline, Phase 4 compare = **0 graded-field differences** (s001/006/008/010 broken+golden); full regression green — broken scores unchanged, golden all 100, baseline 7/10, **advanced 10/10 derived, golden_fallback 0** |
 
-All work M9→agents-v2 is on branch `continued-development`; `master` stays at the
-hackathon submission commit `fc8f7e8`.
+All work M9→Improvement 1 is on branch `continued-development`; `master` stays at
+the hackathon submission commit `fc8f7e8`.
 
 ## Intended user, bottleneck, value, failure mode
 
