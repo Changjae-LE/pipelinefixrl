@@ -16,7 +16,7 @@ PY   := $(VENV)/Scripts/python.exe
 # Scenarios with generated targets (scenario-001 keeps its explicit block below).
 SCENARIOS := 002 003 004 005 006 007 008 009 010
 
-.PHONY: baseline advanced eval-agents agents-matrix help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
+.PHONY: baseline advanced eval-agents agents-matrix test-fast lint-py compose-all quick help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
         scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval \
         $(foreach s,$(SCENARIOS),scenario-$(s) scenario-$(s)-broken scenario-$(s)-golden scenario-$(s)-compose)
 
@@ -140,3 +140,16 @@ eval-agents:
 # with advanced repair_mode / derived-vs-fallback provenance). Needs kind up.
 agents-matrix:
 	"$(PY)" -m harness agent-matrix
+
+# --- fast local developer loop (no kind / Docker / network) ---------------
+test-fast:                         ## fast unit + app tests (no kind)
+	"$(PY)" -m pytest -q tests tests_meta
+
+lint-py:                           ## Ruff (Python lint); `lint` stays helm-lint
+	"$(PY)" -m ruff check harness app tests tests_meta
+
+compose-all:                       ## break+golden == base for every scenario (no kind)
+	@for n in 001 002 003 004 005 006 007 008 009 010; do "$(PY)" -m harness compose-check --id scenario-$$n || exit 1; done
+
+quick: lint lint-py test-fast compose-all   ## local pre-commit gate (no kind)
+	@echo "quick: PASS"

@@ -1,0 +1,44 @@
+name: ci
+
+# Fast gate on every push / PR. No kind, no Kubernetes, no cluster, no secrets.
+# The full scenario + agent regression lives in e2e.yml (manual trigger).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install (editable + dev extras + ruff)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: ruff
+        run: python -m ruff check harness app tests tests_meta
+
+      - name: fast unit + app tests
+        run: python -m pytest -q tests tests_meta
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm lint + template smoke
+        run: |
+          helm lint charts/app --set image.tag=ci
+          helm template ci charts/app --set image.tag=ci > /dev/null
+
+      - name: docker build (app image)
+        run: docker build -f docker/Dockerfile -t pipelinefixrl/app:ci .

@@ -17,11 +17,35 @@ dev = [
     "pytest>=8.0,<9.0",
     "httpx>=0.27,<1.0",
     "pyyaml>=6.0,<7.0",
+    "ruff>=0.6,<1.0",
 ]
 
 [tool.setuptools]
-packages = ["app", "harness"]
+packages = ["app", "harness", "harness.agents", "harness.checks"]
 
 [tool.pytest.ini_options]
+# `tests/` = the application's own tests (copied verbatim into every scenario
+# tree; scripts/ci.sh runs their pytest). The harness/agent meta suite lives in
+# `tests_meta/` and is passed explicitly by `make test-fast` / CI so it never
+# leaks into a scenario tree.
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", ".state", "submission"]
+
+[tool.ruff.lint]
+select = ["F", "B", "UP"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+"tests_meta/**" = ["B011"]
+# Pre-existing violations in files outside the Improvement-1 refactor scope
+# (app/obs.py is a frozen base file; harness/run.py must stay byte-unchanged;
+# harness/cli.py is not modified by this refactor). Left as-is deliberately.
+"app/obs.py" = ["UP017"]
+"harness/run.py" = ["UP017"]
+"harness/cli.py" = ["F401"]

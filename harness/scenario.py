@@ -1,23 +1,28 @@
-"""Milestone 2: scenario runner.
+"""Scenario runner.
 
 A scenario is a base tree plus one or two unified-diff patches:
   * broken variant  = base + break.patch
   * golden variant  = base + break.patch + golden.patch   (composes back to base)
+  * baseline/advanced = base + break.patch + an agent's submitted patch
 
 Each variant is built into its own uniquely tagged image, deployed into its own
 namespace, collected, and scored by the same deterministic checks used for the
 base app. The result is then compared against the per-variant expectation block
 in scenario.yaml.
+
+Tree assembly / patching lives in ``harness.patching``; anti-cheat lives in
+``harness.anticheat``; check implementations live in ``harness.checks``. This
+module is the run orchestrator.
 """
 
 import json
 import pathlib
-import re
-import shutil
 
 import yaml
 
 from harness import tools
+from harness.anticheat import run_scenario_anticheat, universal_anticheat
+from harness.checks import _SCENARIO_CHECKS, _conflict_marker_files
 from harness.collect import collect_all
 from harness.evaluate import (
     _base_stdout_line_count,
@@ -25,7 +30,15 @@ from harness.evaluate import (
     _stdout_line_count,
     evaluate,
 )
-from harness.paths import REPO_ROOT, RUNS_DIR, VERSIONS, ensure_state_dirs
+from harness.patching import (
+    _TREE_PATHS,
+    _apply_patch,
+    _assert_frozen_subtrees,
+    _copy_base_tree,
+    _is_transient,
+    tree_matches_base,
+)
+from harness.paths import RUNS_DIR, VERSIONS, ensure_state_dirs
 from harness.report import write_report
 from harness.run import (
     RELEASE,
@@ -38,38 +51,34 @@ from harness.run import (
 
 SCENARIOS_DIR = pathlib.Path(__file__).resolve().parent / "scenarios"
 
-# Only the paths that matter for building + chart deploy + anti-cheat + compose.
-_TREE_PATHS = [
-    "app",
-    "charts",
-    "docker",
-    "tests",
-    "requirements.txt",
-    "pyproject.toml",
-    ".dockerignore",
-    # scenario-009 runs the real scripts/ci.sh from inside the ephemeral tree,
-    # so it (and the config/ it sources) must be present. No scenario patch is
-    # allowed to touch these — enforced by _assert_frozen_subtrees below.
-    "scripts",
-    "config",
+# Back-compat aliases for the pre-refactor private names (kept in case anything
+# external still reaches for them; nothing in-tree does).
+_anticheat = universal_anticheat
+_scenario_anticheat = run_scenario_anticheat
+
+__all__ = [
+    "SCENARIOS_DIR",
+    "run_scenario",
+    "cleanup_scenario_ns",
+    "compose_check",
+    "_scenario_dir",
+    "_load_cfg",
+    "_read_all",
+    "_evidence_scan",
+    "_check_expect",
+    "_finish_build_failure",
+    # re-exported from harness.patching so `scenmod.X` keeps working for
+    # harness.agents.fix_agent and harness.cli:
+    "_copy_base_tree",
+    "_apply_patch",
+    "_assert_frozen_subtrees",
+    "_is_transient",
+    "_TREE_PATHS",
+    "tree_matches_base",
+    # back-compat aliases:
+    "_anticheat",
+    "_scenario_anticheat",
 ]
-
-# Subtrees copied into the tree purely as tooling; a scenario break/golden patch
-# must never modify them.
-_FROZEN_SUBTREES = ("scripts", "config")
-_IGNORE = shutil.ignore_patterns(
-    "__pycache__", "*.egg-info", ".pytest_cache", ".ruff_cache"
-)
-
-# Transient / git-ignored artifacts that must never count as a tree difference.
-_SKIP_PARTS = ("__pycache__", ".pytest_cache", ".ruff_cache")
-_SKIP_SUFFIXES = (".pyc", ".pyo")
-
-
-def _is_transient(path: pathlib.Path) -> bool:
-    if any(part in _SKIP_PARTS or part.endswith(".egg-info") for part in path.parts):
-        return True
-    return path.suffix in _SKIP_SUFFIXES
 
 
 def _scenario_dir(sid: str) -> pathlib.Path:
@@ -80,297 +89,6 @@ def _load_cfg(sid: str) -> dict:
     return yaml.safe_load(
         (_scenario_dir(sid) / "scenario.yaml").read_text(encoding="utf-8")
     )
-
-
-def _copy_base_tree(dst: pathlib.Path) -> None:
-    dst.mkdir(parents=True, exist_ok=True)
-    for name in _TREE_PATHS:
-        src = REPO_ROOT / name
-        if not src.exists():
-            continue
-        if src.is_dir():
-            shutil.copytree(src, dst / name, ignore=_IGNORE, dirs_exist_ok=True)
-        else:
-            shutil.copy2(src, dst / name)
-
-
-def _assert_frozen_subtrees(tree: pathlib.Path) -> None:
-    """Every file under scripts/ and config/ in the ephemeral tree must be
-    byte-identical to the repo — no scenario patch may touch tooling. Raises
-    SystemExit on the first mismatch/missing file (both variants, not just
-    golden)."""
-    for name in _FROZEN_SUBTREES:
-        base = REPO_ROOT / name
-        if not base.is_dir():
-            continue
-        for f in sorted(base.rglob("*")):
-            if not f.is_file() or _is_transient(f):
-                continue
-            rel = f.relative_to(REPO_ROOT)
-            g = tree / rel
-            if (not g.exists()) or g.read_bytes() != f.read_bytes():
-                raise SystemExit(
-                    f"scenario patch modified or dropped a frozen tooling file: {rel.as_posix()}"
-                )
-
-
-def _apply_patch(tree: pathlib.Path, patch: pathlib.Path) -> None:
-    """`patch -p1` first (byte-exact on this host), `git apply` as fallback."""
-    p = str(patch.resolve())
-    r = tools.run(["patch", "-p1", "--forward", "-i", p], cwd=tree, check=False)
-    if r.returncode == 0:
-        return
-    r2 = tools.run(["git", "apply", "--verbose", p], cwd=tree, check=False)
-    if r2.returncode != 0:
-        raise RuntimeError(
-            f"failed to apply {patch.name}\n[patch]\n{r.stdout}{r.stderr}\n"
-            f"[git apply]\n{r2.stdout}{r2.stderr}"
-        )
-
-
-def _anticheat(tree: pathlib.Path) -> list[str]:
-    """Diff-based integrity check (PROJECT_SPEC 7.2)."""
-    viol: list[str] = []
-    tv = yaml.safe_load((tree / "charts" / "app" / "values.yaml").read_text(encoding="utf-8"))
-
-    if not tv.get("readinessProbe"):
-        viol.append("readinessProbe removed from chart values")
-    if not tv.get("livenessProbe"):
-        viol.append("livenessProbe removed from chart values")
-
-    sc = tv.get("securityContext") or {}
-    for key, want in (
-        ("runAsNonRoot", True),
-        ("allowPrivilegeEscalation", False),
-        ("readOnlyRootFilesystem", True),
-    ):
-        if sc.get(key) != want:
-            viol.append(f"securityContext.{key} removed or weakened")
-
-    if tv.get("replicaCount") in (0, None):
-        viol.append("replicaCount is 0 or absent")
-
-    # image hygiene (PROJECT_SPEC 2.5): universal, applies to every scenario.
-    img = tv.get("image") or {}
-    if img.get("pullPolicy") not in ("Never", "IfNotPresent"):
-        viol.append(f"image.pullPolicy is {img.get('pullPolicy')!r} (must be Never or IfNotPresent)")
-    if img.get("repository") != "pipelinefixrl/app":
-        viol.append(f"image.repository changed to {img.get('repository')!r}")
-
-    base_tests = REPO_ROOT / "tests"
-    for f in sorted(base_tests.rglob("*")):
-        if f.is_file() and not _is_transient(f):
-            rel = f.relative_to(REPO_ROOT)
-            g = tree / rel
-            if (not g.exists()) or g.read_bytes() != f.read_bytes():
-                viol.append(f"test file modified: {rel.as_posix()}")
-    return viol
-
-
-_MEM_UNITS = {
-    "": 1, "k": 1000, "m": 1000**2, "g": 1000**3,
-    "ki": 1024, "mi": 1024**2, "gi": 1024**3,
-}
-
-
-def _mem_to_bytes(value) -> int:
-    """Parse a Kubernetes memory quantity ('16Mi', '64Mi', '1G', '512') to bytes.
-    Unparseable / missing -> 0 (so it fails any `>=` floor check)."""
-    if value is None:
-        return 0
-    s = str(value).strip()
-    num = s.rstrip("KMGkmgi")
-    unit = s[len(num):].lower()
-    try:
-        return int(float(num) * _MEM_UNITS.get(unit, 0))
-    except ValueError:
-        return 0
-
-
-def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -> list[str]:
-    """Scenario-declared anti-cheat rules (additive to _anticheat / §7.2).
-
-    Read from scenario.yaml `evaluation.anticheat`. Supported rule keys:
-      tag_override_loaded_or_empty: true
-          image.tagOverride must be "" or one of the tags the runner loaded.
-      min_memory: {requests: <qty>, limits: <qty>}
-          resources.requests/limits blocks must be present and non-empty, and
-          their .memory must be >= the given floor.
-      image_ref_wired: true
-          deployment.yaml's container image line must still be wired to
-          .Values.image.repository and .Values.image.tag, keep a `required`
-          guard on the tag, and carry no hard-coded literal tag.
-      service_wiring_intact: true
-          service.yaml defines exactly one Service, no ExternalName, and derives
-          its selector from the `app.selectorLabels` helper; deployment.yaml's
-          selector / pod labels still use that same helper.
-      security_posture_intact: true
-          podSecurityContext.seccompProfile stays RuntimeDefault,
-          securityContext.runAsUser is an integer >= 1000, and deployment.yaml
-          adds no privileged/SYS_ADMIN container and no volume mounted at /.
-      structured_logging_intact: true
-          values.yaml logFormat is exactly "json" (no fallback-triggering
-          value), logLevel is debug/info (access lines not suppressed),
-          app/obs.py is byte-identical to base-v2 (the fix is the config, not
-          the formatter), and deployment.yaml still wires LOG_FORMAT from
-          .Values.logFormat.
-      config_wiring_intact: true
-          deployment.yaml still sources APP_TIER via configMapKeyRef keyed by
-          .Values.config.key, the app-config ConfigMap is still templated from
-          .Values.config.tier with non-empty data, app/main.py still reads
-          APP_TIER from the environment, and values.yaml config.tier is non-empty.
-      ci_contract_intact: true
-          scripts/ci.sh and scripts/lib.sh in the tree are byte-identical to
-          base, no tests/ file changed, tests/ still declares >= 6 `def test_`,
-          app/main.py's /health handler returns {"status": "ok"}, and
-          charts/app/Chart.yaml version is valid semver.
-      merge_resolved_cleanly: true
-          no file in the tree carries a conflict-marker line, requirements.txt
-          is non-empty and still declares fastapi + uvicorn with version
-          constraints, and docker/Dockerfile still pip-installs from
-          requirements.txt.
-    """
-    rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
-    viol: list[str] = []
-    tv = yaml.safe_load((tree / "charts" / "app" / "values.yaml").read_text(encoding="utf-8"))
-
-    if rules.get("tag_override_loaded_or_empty"):
-        override = ((tv.get("image") or {}).get("tagOverride")) or ""
-        if override and override not in loaded_tags:
-            viol.append(
-                f"image.tagOverride {override!r} is neither empty nor a loaded tag {loaded_tags}"
-            )
-
-    floors = rules.get("min_memory") or {}
-    if floors:
-        res = tv.get("resources") or {}
-        for block in ("requests", "limits"):
-            if block not in floors:
-                continue
-            got = res.get(block)
-            if not got:
-                viol.append(f"resources.{block} block missing or empty")
-                continue
-            if _mem_to_bytes(got.get("memory")) < _mem_to_bytes(floors[block]):
-                viol.append(
-                    f"resources.{block}.memory {got.get('memory')!r} < floor {floors[block]!r}"
-                )
-
-    if rules.get("image_ref_wired"):
-        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(
-            encoding="utf-8"
-        )
-        img_lines = [ln for ln in dep.splitlines() if ln.lstrip().startswith("image:")]
-        if not img_lines:
-            viol.append("deployment.yaml has no container image: line")
-        else:
-            line = img_lines[0]
-            if ".Values.image.repository" not in line:
-                viol.append("image line no longer references .Values.image.repository")
-            if not re.search(r"\.Values\.image\.tag(?![A-Za-z0-9_])", line):
-                viol.append("image line no longer references .Values.image.tag")
-            if "required" not in line:
-                viol.append("required-value guard on image.tag removed from image line")
-            bare = re.sub(r"\{\{.*?\}\}", "", line)
-            if ":latest" in bare or re.search(r":\s*['\"]?v?\d", bare):
-                viol.append(f"image line hard-codes a literal tag: {line.strip()!r}")
-
-    if rules.get("service_wiring_intact"):
-        svc = (tree / "charts" / "app" / "templates" / "service.yaml").read_text(encoding="utf-8")
-        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
-        if svc.count("kind: Service") != 1:
-            viol.append("service.yaml must define exactly one Service")
-        if "ExternalName" in svc:
-            viol.append("service.yaml must not use type ExternalName")
-        if 'include "app.selectorLabels"' not in svc:
-            viol.append("service.yaml selector no longer derives from the app.selectorLabels helper")
-        if dep.count('include "app.selectorLabels"') < 2:
-            viol.append("deployment.yaml selector / pod labels no longer use app.selectorLabels")
-
-    if rules.get("security_posture_intact"):
-        psc = tv.get("podSecurityContext") or {}
-        if ((psc.get("seccompProfile") or {}).get("type")) != "RuntimeDefault":
-            viol.append("podSecurityContext.seccompProfile.type must remain RuntimeDefault")
-        ru = (tv.get("securityContext") or {}).get("runAsUser")
-        if not isinstance(ru, int) or isinstance(ru, bool) or ru < 1000:
-            viol.append(f"securityContext.runAsUser must be an integer >= 1000 (got {ru!r})")
-        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
-        if "privileged: true" in dep or "SYS_ADMIN" in dep:
-            viol.append("deployment.yaml introduces a privileged / SYS_ADMIN container")
-        if re.search(r"^\s*mountPath:\s*/\s*$", dep, re.M):
-            viol.append("deployment.yaml mounts a volume at / (fake read-only rootfs)")
-
-    if rules.get("config_wiring_intact"):
-        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
-        if "configMapKeyRef" not in dep or ".Values.config.key" not in dep:
-            viol.append("deployment.yaml no longer sources APP_TIER via configMapKeyRef / .Values.config.key")
-        cm_path = tree / "charts" / "app" / "templates" / "configmap.yaml"
-        cm = cm_path.read_text(encoding="utf-8") if cm_path.exists() else ""
-        if "kind: ConfigMap" not in cm or ".Values.config.tier" not in cm:
-            viol.append("app-config ConfigMap template missing or no longer populated from .Values.config.tier")
-        main_py = (tree / "app" / "main.py").read_text(encoding="utf-8")
-        if 'os.environ.get("APP_TIER"' not in main_py and "os.environ['APP_TIER']" not in main_py:
-            viol.append("app/main.py no longer reads APP_TIER from the environment")
-        if not str((tv.get("config") or {}).get("tier", "")).strip():
-            viol.append("values.yaml config.tier is empty")
-
-    if rules.get("structured_logging_intact"):
-        if tv.get("logFormat") != "json":
-            viol.append(f"values.yaml logFormat must be exactly \"json\" (got {tv.get('logFormat')!r})")
-        if str(tv.get("logLevel", "")).lower() not in ("debug", "info"):
-            viol.append(f"values.yaml logLevel must be debug/info, not raised to suppress access logs (got {tv.get('logLevel')!r})")
-        tree_obs = (tree / "app" / "obs.py").read_bytes() if (tree / "app" / "obs.py").exists() else b""
-        base_obs = (REPO_ROOT / "app" / "obs.py").read_bytes()
-        if tree_obs != base_obs:
-            viol.append("app/obs.py changed from base-v2 (the fix is the config value, not the formatter)")
-        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
-        if "name: LOG_FORMAT" not in dep or ".Values.logFormat" not in dep:
-            viol.append("deployment.yaml no longer wires LOG_FORMAT from .Values.logFormat")
-
-    if rules.get("ci_contract_intact"):
-        for rel in ("scripts/ci.sh", "scripts/lib.sh"):
-            tf = tree / rel
-            if (not tf.exists()) or tf.read_bytes() != (REPO_ROOT / rel).read_bytes():
-                viol.append(f"{rel} in the tree is not byte-identical to base")
-        base_tests = REPO_ROOT / "tests"
-        n_tests = 0
-        for f in sorted(base_tests.rglob("*")):
-            if not f.is_file() or _is_transient(f):
-                continue
-            rel = f.relative_to(REPO_ROOT)
-            g = tree / rel
-            if (not g.exists()) or g.read_bytes() != f.read_bytes():
-                viol.append(f"test file modified: {rel.as_posix()}")
-        for pyf in sorted((tree / "tests").rglob("*.py")):
-            n_tests += len(re.findall(r"^\s*def test_", pyf.read_text(encoding="utf-8", errors="replace"), re.M))
-        if n_tests < 6:
-            viol.append(f"tests/ declares only {n_tests} `def test_` (need >= 6)")
-        main_py = (tree / "app" / "main.py").read_text(encoding="utf-8")
-        if '{"status": "ok"}' not in main_py:
-            viol.append('app/main.py /health handler no longer returns {"status": "ok"}')
-        chart = (tree / "charts" / "app" / "Chart.yaml").read_text(encoding="utf-8")
-        m = re.search(r"^version:\s*[\"']?(\d+\.\d+\.\d+)[\"']?\s*$", chart, re.M)
-        if not m:
-            viol.append("charts/app/Chart.yaml version is missing or not valid semver")
-
-    if rules.get("merge_resolved_cleanly"):
-        from harness.evaluate import _conflict_marker_files
-
-        marked = _conflict_marker_files(tree)
-        if marked:
-            viol.append(f"tree still carries conflict-marker lines: {sorted(marked)}")
-        req = tree / "requirements.txt"
-        rtxt = req.read_text(encoding="utf-8") if req.exists() else ""
-        if not rtxt.strip():
-            viol.append("requirements.txt is missing or empty")
-        if "fastapi" not in rtxt or "uvicorn" not in rtxt:
-            viol.append("requirements.txt no longer declares fastapi and uvicorn")
-        if not re.search(r"fastapi\s*[<>=!~]", rtxt) or not re.search(r"uvicorn[^\n]*[<>=!~]", rtxt):
-            viol.append("fastapi / uvicorn no longer carry version constraints")
-        dockerfile = (tree / "docker" / "Dockerfile").read_text(encoding="utf-8")
-        if "pip install" not in dockerfile or "requirements.txt" not in dockerfile:
-            viol.append("docker/Dockerfile no longer pip-installs from requirements.txt")
-    return viol
 
 
 def _read_all(run_dir: pathlib.Path, *names: str) -> str:
@@ -444,8 +162,6 @@ def _finish_build_failure(scenario_id, variant, run_id, run_dir, tree, cfg, meta
     misses its expectation. Nothing here touches the successful build/deploy
     path.
     """
-    from harness.evaluate import _SCENARIO_CHECKS, _conflict_marker_files
-
     conflicts = _conflict_marker_files(tree)
 
     ev = cfg.get("evaluation", {}) or {}
@@ -548,12 +264,12 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_pat
     timeout = int(ev.get("deploy_timeout_seconds", VERSIONS.get("DEPLOY_TIMEOUT_SECONDS", "120")))
     tag = image_tag(f"{scenario_id}-{variant}", ts)
 
-    # Anti-cheat: base §7.2 rules always; scenario-declared rules only for a
+    # Anti-cheat: universal §7.2 rules always; scenario-declared rules only for a
     # candidate fix (golden / agent submission), never against the broken
     # reference which is the injected fault, not a shortcut.
-    violations = _anticheat(tree)
+    violations = universal_anticheat(tree)
     if variant in ("golden", "baseline", "advanced"):
-        violations += _scenario_anticheat(cfg, tree, loaded_tags=[tag])
+        violations += run_scenario_anticheat(cfg, tree, loaded_tags=[tag])
     (run_dir / "anticheat.json").write_text(
         json.dumps(violations, indent=2), encoding="utf-8"
     )
@@ -571,7 +287,7 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_pat
         "anticheat_violations": violations,
         "loaded_tags": [tag],
         # activate scenario-specific scored checks + weight reallocation
-        # (harness/evaluate.py registry hook; empty for base app / scenario-001).
+        # (harness/checks registry hook; empty for base app / scenario-001).
         "scenario_checks": list(ev.get("checks") or []),
         "weight_overrides": dict(ev.get("weights") or {}),
     }
@@ -672,21 +388,7 @@ def compose_check(scenario_id: str):
     _apply_patch(tree, sdir / cfg["patches"]["break"])
     _apply_patch(tree, sdir / cfg["patches"]["golden"])
 
-    diffs: list[str] = []
-    for name in _TREE_PATHS:
-        src = REPO_ROOT / name
-        if not src.exists():
-            continue
-        if src.is_file():
-            if src.read_bytes() != (tree / name).read_bytes():
-                diffs.append(name)
-            continue
-        for f in sorted(src.rglob("*")):
-            if f.is_file() and not _is_transient(f):
-                rel = f.relative_to(REPO_ROOT)
-                g = tree / rel
-                if (not g.exists()) or g.read_bytes() != f.read_bytes():
-                    diffs.append(rel.as_posix())
+    diffs = tree_matches_base(tree)
 
     base.mkdir(parents=True, exist_ok=True)
     (base / "compose-check.json").write_text(
