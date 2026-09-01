@@ -47,7 +47,16 @@ _TREE_PATHS = [
     "requirements.txt",
     "pyproject.toml",
     ".dockerignore",
+    # scenario-009 runs the real scripts/ci.sh from inside the ephemeral tree,
+    # so it (and the config/ it sources) must be present. No scenario patch is
+    # allowed to touch these — enforced by _assert_frozen_subtrees below.
+    "scripts",
+    "config",
 ]
+
+# Subtrees copied into the tree purely as tooling; a scenario break/golden patch
+# must never modify them.
+_FROZEN_SUBTREES = ("scripts", "config")
 _IGNORE = shutil.ignore_patterns(
     "__pycache__", "*.egg-info", ".pytest_cache", ".ruff_cache"
 )
@@ -83,6 +92,26 @@ def _copy_base_tree(dst: pathlib.Path) -> None:
             shutil.copytree(src, dst / name, ignore=_IGNORE, dirs_exist_ok=True)
         else:
             shutil.copy2(src, dst / name)
+
+
+def _assert_frozen_subtrees(tree: pathlib.Path) -> None:
+    """Every file under scripts/ and config/ in the ephemeral tree must be
+    byte-identical to the repo — no scenario patch may touch tooling. Raises
+    SystemExit on the first mismatch/missing file (both variants, not just
+    golden)."""
+    for name in _FROZEN_SUBTREES:
+        base = REPO_ROOT / name
+        if not base.is_dir():
+            continue
+        for f in sorted(base.rglob("*")):
+            if not f.is_file() or _is_transient(f):
+                continue
+            rel = f.relative_to(REPO_ROOT)
+            g = tree / rel
+            if (not g.exists()) or g.read_bytes() != f.read_bytes():
+                raise SystemExit(
+                    f"scenario patch modified or dropped a frozen tooling file: {rel.as_posix()}"
+                )
 
 
 def _apply_patch(tree: pathlib.Path, patch: pathlib.Path) -> None:
@@ -190,6 +219,11 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
           .Values.config.key, the app-config ConfigMap is still templated from
           .Values.config.tier with non-empty data, app/main.py still reads
           APP_TIER from the environment, and values.yaml config.tier is non-empty.
+      ci_contract_intact: true
+          scripts/ci.sh and scripts/lib.sh in the tree are byte-identical to
+          base, no tests/ file changed, tests/ still declares >= 6 `def test_`,
+          app/main.py's /health handler returns {"status": "ok"}, and
+          charts/app/Chart.yaml version is valid semver.
     """
     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
     viol: list[str] = []
@@ -287,6 +321,32 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
         dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
         if "name: LOG_FORMAT" not in dep or ".Values.logFormat" not in dep:
             viol.append("deployment.yaml no longer wires LOG_FORMAT from .Values.logFormat")
+
+    if rules.get("ci_contract_intact"):
+        for rel in ("scripts/ci.sh", "scripts/lib.sh"):
+            tf = tree / rel
+            if (not tf.exists()) or tf.read_bytes() != (REPO_ROOT / rel).read_bytes():
+                viol.append(f"{rel} in the tree is not byte-identical to base")
+        base_tests = REPO_ROOT / "tests"
+        n_tests = 0
+        for f in sorted(base_tests.rglob("*")):
+            if not f.is_file() or _is_transient(f):
+                continue
+            rel = f.relative_to(REPO_ROOT)
+            g = tree / rel
+            if (not g.exists()) or g.read_bytes() != f.read_bytes():
+                viol.append(f"test file modified: {rel.as_posix()}")
+        for pyf in sorted((tree / "tests").rglob("*.py")):
+            n_tests += len(re.findall(r"^\s*def test_", pyf.read_text(encoding="utf-8", errors="replace"), re.M))
+        if n_tests < 6:
+            viol.append(f"tests/ declares only {n_tests} `def test_` (need >= 6)")
+        main_py = (tree / "app" / "main.py").read_text(encoding="utf-8")
+        if '{"status": "ok"}' not in main_py:
+            viol.append('app/main.py /health handler no longer returns {"status": "ok"}')
+        chart = (tree / "charts" / "app" / "Chart.yaml").read_text(encoding="utf-8")
+        m = re.search(r"^version:\s*[\"']?(\d+\.\d+\.\d+)[\"']?\s*$", chart, re.M)
+        if not m:
+            viol.append("charts/app/Chart.yaml version is missing or not valid semver")
     return viol
 
 
@@ -418,6 +478,7 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_pat
         patch_seq.append(pathlib.Path(agent_patch))
     for p in patch_seq:
         _apply_patch(tree, p)
+    _assert_frozen_subtrees(tree)
 
     ev = cfg.get("evaluation", {}) or {}
     timeout = int(ev.get("deploy_timeout_seconds", VERSIONS.get("DEPLOY_TIMEOUT_SECONDS", "120")))

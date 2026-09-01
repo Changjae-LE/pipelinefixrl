@@ -1,0 +1,5 @@
+--- a/app/main.py
++++ b/app/main.py
+@@ -35 +35 @@
+-    return JSONResponse({"status": "healthy"})
++    return JSONResponse({"status": "ok"})
