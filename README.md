@@ -13,18 +13,22 @@ the micro1 Agentic Workflows Hackathon.
 - **Milestone 2** (scenario-001, incorrect readiness probe path) — implemented;
   evidence in [`docs/M2_EVIDENCE.md`](docs/M2_EVIDENCE.md).
 - **M-BE** (base-evolution prerequisites for scenarios 002–010) — implemented.
-- **Milestones M3–M8** — implemented; per-milestone evidence in
-  [`docs/PLAN.md`](docs/PLAN.md) §11.8:
+- **Milestones M3–M11 — all 10 scenarios implemented**; per-milestone evidence
+  in [`docs/PLAN.md`](docs/PLAN.md) §11.8:
   - **M3** scenario-002 — wrong pinned image tag (`ErrImageNeverPull`)
   - **M4** scenario-003 — OOMKilled crash loop
   - **M5** scenario-004 — Helm value not wired to template (`InvalidImageName`)
   - **M6** scenario-005 — Service selects no pods
-  - **M7** scenario-006 — container runs as root (`runs_as_nonroot`,
-    `readonly_rootfs`, `no_priv_escalation`, `caps_dropped` checks)
-  - **M8** scenario-007 — misconfigured ConfigMap reference
-    (`CreateContainerConfigError`; `config_applied` check)
-- **Baseline & advanced repair agents** — implemented (`harness/agents/fix_agent.py`,
-  `make baseline` / `advanced` / `eval-agents`); see "Baseline & advanced solutions".
+  - **M7** scenario-006 — container runs as root
+  - **M8** scenario-007 — misconfigured ConfigMap reference (`CreateContainerConfigError`)
+  - **M9** scenario-008 — structured-log format regression (`structured_logs_ok`)
+  - **M10** scenario-009 — CI + health-contract regression (`ci_gate_pass` runs the real `scripts/ci.sh`)
+  - **M11** scenario-010 — unresolved merge conflict (`image_build_ok`, `git_tree_resolved`)
+  - M3–M8 are on `master` (submission commit `fc8f7e8`); **M9–M11 are on branch
+    `continued-development`**.
+- **Repair agents** — `baseline` (offline no-LLM heuristic, 7/10) and `advanced`
+  (deriving fixer, **10/10 derived**, golden replay only as a visible fallback);
+  see "Baseline & advanced solutions". On `continued-development`.
 - Scenarios 008–010 (M9–M11) — not started.
 
 ## Prerequisites
@@ -65,46 +69,100 @@ make kind-down
 
 ## Baseline & advanced solutions
 
-Two repair-agent tiers run against the **same** environment and are scored by the
-**same** deterministic pipeline as `broken` / `golden`:
+Two repair-agent tiers (`harness/agents/fix_agent.py`) run against the **same**
+environment and are scored by the **same** deterministic pipeline as `broken` /
+`golden`. Each is handed the broken scenario tree, submits a candidate fix as a
+unified diff, and the unchanged harness builds / deploys / scores it as a
+`baseline` / `advanced` variant run.
 
-| Tier | What it is | How it fixes |
+### Architecture
+
+| Tier | Inputs it may use | How it repairs |
 |---|---|---|
-| **baseline** | offline, no-LLM heuristic (`harness/agents/fix_agent.py`) | knows a few common single-token misconfigurations (probe-path typo, ConfigMap-key typo) and edits `charts/app/values.yaml`; submits **no change** for anything outside that table |
-| **advanced** | the Claude Code agentic workflow | reads `task.md` + live `kubectl describe` / `get events` on the broken deployment, reasons across the Helm/Kubernetes object graph, edits the chart. It authored every scenario's reference fix and anti-cheat rules (see git history + `submission/agent-trajectory.jsonl`); this module replays its converged, anti-cheat-clean fix so the tier is runnable and scored |
+| **baseline** | the broken scenario tree only | offline, deterministic, **no-LLM heuristic**. A small literal-substitution table (probe path, image override, memory floor, ConfigMap key, log format, `/health` body) plus a mechanical merge-conflict resolver. No route parsing, no runtime evidence, no cross-file correlation — so 004 / 005 / 006 are out of reach, a deliberate, visible capability boundary. |
+| **advanced** | the broken tree's **own source files** + the **collected runtime evidence** of a broken run (`events` / `pods.json` / `logs/` / `build.log` / `ci.log`) + validation feedback from its own attempt | a **deriving fixer**. `_derive_repair` runs 10 fault-class detectors — probe path vs the routes the app actually serves, an image override that isn't on the node, OOMKilled + a memory floor, an undefined `.Values.image.*` key in the template, a hard-coded Service selector that diverged from the shared helper, an un-hardened `securityContext`, a `configMapKeyRef` key the ConfigMap doesn't define, a non-structured `logFormat`, a `/health` body that disagrees with the health test's asserted contract, and unresolved conflict markers — and constructs the repair from that evidence. It **never reads `golden.patch`, the golden variant, or any expected-repaired-file content** on the derivation path. |
+
+### Derived vs. fallback (advanced)
+
+Execution order is strict: **derive → run as `advanced` → validate (SCORE 100 +
+anti-cheat clean) → only if that fails, explicitly replay `golden.patch` as a
+fallback**. Every advanced result records provenance to
+`advanced_provenance.json` and the eval matrix:
+
+`repair_mode` (`derived` | `golden_fallback` | `no_change` | `failed`),
+`derived_attempted`, `derived_validation_passed`, `fallback_used`,
+`final_score`, `files_modified`.
+
+A `golden_fallback` SCORE 100 is **not** a derived-agent success and is reported
+distinctly everywhere.
+
+### Commands
 
 ```bash
 make kind-up
 
-make baseline AGENT_SID=scenario-001      # heuristic fix        -> SCORE 100
-make advanced AGENT_SID=scenario-005      # workflow fix          -> SCORE 100
-make baseline AGENT_SID=scenario-005      # no rule -> no change  -> broken-level score
-
-make eval-agents AGENT_SID=scenario-007   # broken + golden + baseline + advanced, all scored
+make baseline AGENT_SID=scenario-001      # heuristic fix
+make advanced AGENT_SID=scenario-005      # derived fix
+make agents-matrix                        # broken/golden/baseline/advanced x 001..010 -> results table + .state/agents/matrix.json
 
 # or drive the harness directly:
-.venv/Scripts/python -m harness agent --id scenario-001 --tier baseline
-.venv/Scripts/python -m harness agent --id scenario-001 --tier advanced
+.venv/Scripts/python -m harness agent --id scenario-004 --tier advanced   # prints its provenance
+.venv/Scripts/python -m harness agent-matrix
 
 make kind-down
 ```
 
-Verified: `baseline` solves scenario-001 and scenario-007 (SCORE 100);
-scenario-002/003/004/005/006 are outside the heuristic's reach — an intentionally
-visible capability boundary (e.g. `baseline scenario-005` → SCORE 50).
-`advanced` solves all seven (SCORE 100, anti-cheat clean).
+### Results matrix (scenario-001 … scenario-010)
+
+| scenario | broken | golden | baseline | baseline mode | advanced | advanced repair_mode |
+|---|---:|---:|---:|---|---:|---|
+| scenario-001 | 10 | 100 | 100 | heuristic | 100 | **derived** |
+| scenario-002 | 10 | 100 | 100 | heuristic | 100 | **derived** |
+| scenario-003 | 10 | 100 | 100 | heuristic | 100 | **derived** |
+| scenario-004 | 10 | 100 | 10 | no_change | 100 | **derived** |
+| scenario-005 | 50 | 100 | 50 | no_change | 100 | **derived** |
+| scenario-006 | 55 | 100 | 55 | no_change | 100 | **derived** |
+| scenario-007 | 10 | 100 | 100 | heuristic | 100 | **derived** |
+| scenario-008 | 65 | 100 | 100 | heuristic | 100 | **derived** |
+| scenario-009 | 50 | 100 | 100 | heuristic | 100 | **derived** |
+| scenario-010 | 0 | 100 | 100 | heuristic | 100 | **derived** |
+
+**advanced: 10 / 10 `derived`, 0 `golden_fallback`** — every fix constructed from
+scenario-visible evidence, SCORE 100, anti-cheat clean. Verified deterministic
+across two independent full runs, and by a runtime boundary probe: advanced still
+produces `repair_mode: derived` with `golden.patch` physically removed from disk.
+**baseline: 7 / 10** — `scenario-004` / `005` / `006` need multi-line template /
+block reconstruction the heuristic does not attempt (their `baseline` score
+equals the `broken` score).
+
+### Limitations / remaining failure modes
+
+- Advanced's detectors are hand-written per fault-class; a genuinely novel fault
+  outside the ten classes would fall through to `golden_fallback` (visible in the
+  provenance), not a derived fix.
+- The derived security-context and image-ref repairs apply a *standard*
+  hardened / canonical form; they happen to coincide with `golden` but are built
+  from Kubernetes/Helm knowledge, not copied.
+- Advanced needs one broken run's collected evidence; `agent-matrix` produces it,
+  a standalone `harness agent --tier advanced` re-uses the last broken run or
+  triggers one.
 
 ## Evaluation
 
 ```bash
 make e2e-base                              # A1-A14 base-pipeline acceptance (SCORE 100)
-make scenario-00N                          # broken + golden + compose-check, scenario N (1..7)
-make eval-agents AGENT_SID=scenario-00N    # + baseline + advanced scored runs
+make scenario-00N                          # broken + golden + compose-check, scenario N (1..10)
+make agents-matrix                         # full 001..010 broken/golden/baseline/advanced matrix
 ```
 
-Per-milestone evidence (scores, determinism, regression, teardown) is recorded in
-[`docs/PLAN.md`](docs/PLAN.md) §11.8. Full build trajectory:
-`submission/agent-trajectory.jsonl`.
+**Methodology.** Every scenario has a one-line injected fault, a byte-exact
+reference `golden.patch`, a weighted deterministic rubric, a scenario-specific
+anti-cheat gate, and a `compose-check` proving `break + golden == base`. Agent
+tiers are scored by the identical pipeline, so `broken` / `golden` / `baseline` /
+`advanced` are directly comparable. Each scenario milestone was gated on a full
+regression of every prior scenario before commit; the agent work was gated on
+`make e2e-base` + scenario-001…010 broken/golden/compose + baseline + advanced.
+Per-milestone evidence is in [`docs/PLAN.md`](docs/PLAN.md) §11.8.
 
 ## Improvement changelog
 
@@ -123,7 +181,14 @@ prior scenario **before** commit (evidence: `docs/PLAN.md` §11.8):
 | M7 | `9492bdc` `4c7a559` | scenario-006 — container runs as root; 4 posture checks + `security_posture_intact` anti-cheat | broken ×2 =55 / golden 100 / compose; +A1–A14, s001–005 |
 | M8 | `7393766` `68269af` | scenario-007 — misconfigured ConfigMap ref (`CreateContainerConfigError`); `config_applied` check + `config_wiring_intact` anti-cheat | broken ×2 =10 / golden 100 / compose; +A1–A14, s001–006 |
 | README | `a8dd0f2` | status through M8 | — |
-| agents | this commit | baseline + advanced repair-agent tiers; `harness agent` CLI + `make baseline` / `advanced` / `eval-agents` | baseline s001/s007 =100, s005 no-op=50; advanced s005 =100 |
+| agents (v1) | `af3414a` | first baseline + advanced tiers; `harness agent` CLI + `make baseline`/`advanced`/`eval-agents`; advanced = golden replay | baseline s001/s007 =100; advanced 001–007 =100 |
+| **M9** | `929ad58` `98b8440` | scenario-008 — structured-log format regression; `structured_logs_ok` check (+ machine-derived stdout line-count floor) + `structured_logging_intact` anti-cheat | broken ×2 =65 / golden 100 / compose; +A1–A14, s001–008 |
+| **M10** | `4ebb9c8` `c2c9915` | scenario-009 — CI + health contract; `ci_gate_pass` runs the real `scripts/ci.sh` from the ephemeral tree; `_TREE_PATHS` += `scripts/`+`config/` + `_assert_frozen_subtrees` guard + `ci_contract_intact` anti-cheat | broken ×2 =50 / golden 100 / compose; +A1–A14, s001–009; integrity probes 1–6 |
+| **M11** | `eda6087` `af83069` | scenario-010 — unresolved merge conflict; `image_build_ok` + `git_tree_resolved` checks; `_finish_build_failure` completed per §11.4 + `merge_resolved_cleanly` anti-cheat | broken ×2 =0 / golden 100 / compose; +A1–A14, s001–010 |
+| agents (v2) | `4a4bc3e` | advanced becomes a **deriving fixer** (10 fault-class detectors, scenario-visible evidence only, golden replay only as explicit provenance-recorded fallback); baseline broadened to 7/10; `harness agent-matrix` + `make agents-matrix` | matrix: **advanced 10/10 derived**, baseline 7/10; static + runtime golden-boundary probes; `make e2e-base` + s001–010 broken/golden/compose + baseline + advanced all green |
+
+All work M9→agents-v2 is on branch `continued-development`; `master` stays at the
+hackathon submission commit `fc8f7e8`.
 
 ## Intended user, bottleneck, value, failure mode
 

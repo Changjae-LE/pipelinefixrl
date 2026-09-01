@@ -1198,6 +1198,41 @@ order; none started before this matrix is approved.
   all deterministic broken/golden/compose, full regression green). `master`
   remains at the submission tag `fc8f7e8`; the continued work lives on
   `continued-development` (`eda6087` + its PLAN commit).
+- **Repair agents — deriving `advanced` + broadened `baseline` ✅** — commit
+  `4a4bc3e` (branch `continued-development`) *feat: derived advanced repair
+  agent + broadened baseline + eval matrix*.
+  - **Architecture.** `baseline` stays an offline, no-LLM heuristic (literal
+    substitution table + mechanical conflict resolver): solves 001/002/003/007/
+    008/009/010, leaves 004/005/006 at broken level (documented boundary).
+    `advanced` is now a **deriving fixer** — `_derive_repair` runs 10
+    fault-class detectors over the broken tree's own source + collected runtime
+    evidence (`events`/`pods.json`/`logs`/`build.log`/`ci.log`) and constructs
+    the repair; it never reads `golden.patch`, the golden variant, or expected
+    file content on the derivation path. Golden replay survives **only** as an
+    explicit fallback: derive → run as `advanced` → validate (SCORE 100 +
+    anti-cheat clean) → replay `golden.patch` only on failure. Every advanced
+    result records `advanced_provenance.json` (`repair_mode` ∈ derived /
+    golden_fallback / no_change / failed, plus derived_attempted /
+    derived_validation_passed / fallback_used / final_score / files_modified).
+  - **Boundary probes.** Static: `_derive_repair` + all detectors + helpers
+    contain no `golden` reference; `run()` reads `golden.patch` exactly once, in
+    the labelled fallback branch. Runtime: derivation for all 10 scenarios
+    completes with every `golden` path guarded to raise — none touched — and a
+    live `advanced` run of scenario-005 with `golden.patch` physically removed
+    still returns `repair_mode: derived`, SCORE 100.
+  - **Evaluation.** `harness agent-matrix` / `make agents-matrix` runs
+    broken/golden/baseline/advanced for scenario-001…010 →
+    `.state/agents/matrix.json` + a table. Result (deterministic across two
+    independent full runs): **advanced 10/10 `derived`, 0 `golden_fallback`**,
+    every fix SCORE 100 and anti-cheat clean; **baseline 7/10** (004/005/006
+    `no_change`, score == broken).
+  - **Regression.** `make e2e-base` (A1–A14, SCORE 100) + scenario-001…010
+    broken/golden/compose + `baseline` 001–010 + `advanced` 001–010 all PASS;
+    teardown + integrity clean; `master` unchanged at `fc8f7e8`.
+  - **Limitations.** Detectors are per-fault-class; a fault outside the ten
+    classes falls through to a visible `golden_fallback`. The derived
+    security-context / image-ref repairs apply a standard hardened / canonical
+    form (coincides with `golden`, constructed from K8s/Helm knowledge).
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
