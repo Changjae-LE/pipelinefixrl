@@ -62,6 +62,12 @@ def cmd_agent(args):
     fix_agent.run(args.id, args.tier, enforce=not args.allow_unexpected)
 
 
+def cmd_agent_matrix(args):
+    from harness.agents import fix_agent
+    ids = [args.id] if args.id else None
+    fix_agent.eval_matrix(ids)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="harness", description="PipelineFixRL harness")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -112,6 +118,12 @@ def main(argv=None):
     ag.add_argument("--allow-unexpected", action="store_true",
                     help="do not exit non-zero when the result misses its expectation")
     ag.set_defaults(func=cmd_agent)
+
+    am = sub.add_parser("agent-matrix",
+                        help="run broken/golden/baseline/advanced for scenario-001..010 "
+                             "and write the results matrix")
+    am.add_argument("--id", default=None, help="restrict to a single scenario id")
+    am.set_defaults(func=cmd_agent_matrix)
 
     args = p.parse_args(argv)
     args.func(args)

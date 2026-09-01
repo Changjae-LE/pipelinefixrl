@@ -16,7 +16,7 @@ PY   := $(VENV)/Scripts/python.exe
 # Scenarios with generated targets (scenario-001 keeps its explicit block below).
 SCENARIOS := 002 003 004 005 006 007 008 009 010
 
-.PHONY: baseline advanced eval-agents help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
+.PHONY: baseline advanced eval-agents agents-matrix help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
         scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval \
         $(foreach s,$(SCENARIOS),scenario-$(s) scenario-$(s)-broken scenario-$(s)-golden scenario-$(s)-compose)
 
@@ -135,3 +135,8 @@ eval-agents:
 	"$(PY)" -m harness agent --id $(AGENT_SID) --tier advanced --allow-unexpected
 	"$(PY)" -m harness scenario-cleanup-ns --id $(AGENT_SID) --variant advanced
 	@echo "eval-agents ($(AGENT_SID)): PASS"
+
+# Full 001..010 agent evaluation matrix (broken vs golden vs baseline vs advanced,
+# with advanced repair_mode / derived-vs-fallback provenance). Needs kind up.
+agents-matrix:
+	"$(PY)" -m harness agent-matrix
