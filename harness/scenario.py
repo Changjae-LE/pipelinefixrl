@@ -224,6 +224,11 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
           base, no tests/ file changed, tests/ still declares >= 6 `def test_`,
           app/main.py's /health handler returns {"status": "ok"}, and
           charts/app/Chart.yaml version is valid semver.
+      merge_resolved_cleanly: true
+          no file in the tree carries a conflict-marker line, requirements.txt
+          is non-empty and still declares fastapi + uvicorn with version
+          constraints, and docker/Dockerfile still pip-installs from
+          requirements.txt.
     """
     rules = ((cfg.get("evaluation") or {}).get("anticheat")) or {}
     viol: list[str] = []
@@ -347,6 +352,24 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
         m = re.search(r"^version:\s*[\"']?(\d+\.\d+\.\d+)[\"']?\s*$", chart, re.M)
         if not m:
             viol.append("charts/app/Chart.yaml version is missing or not valid semver")
+
+    if rules.get("merge_resolved_cleanly"):
+        from harness.evaluate import _conflict_marker_files
+
+        marked = _conflict_marker_files(tree)
+        if marked:
+            viol.append(f"tree still carries conflict-marker lines: {sorted(marked)}")
+        req = tree / "requirements.txt"
+        rtxt = req.read_text(encoding="utf-8") if req.exists() else ""
+        if not rtxt.strip():
+            viol.append("requirements.txt is missing or empty")
+        if "fastapi" not in rtxt or "uvicorn" not in rtxt:
+            viol.append("requirements.txt no longer declares fastapi and uvicorn")
+        if not re.search(r"fastapi\s*[<>=!~]", rtxt) or not re.search(r"uvicorn[^\n]*[<>=!~]", rtxt):
+            viol.append("fastapi / uvicorn no longer carry version constraints")
+        dockerfile = (tree / "docker" / "Dockerfile").read_text(encoding="utf-8")
+        if "pip install" not in dockerfile or "requirements.txt" not in dockerfile:
+            viol.append("docker/Dockerfile no longer pip-installs from requirements.txt")
     return viol
 
 
@@ -411,47 +434,88 @@ def _check_expect(checks: list[dict], score: int, expect: dict, violations: list
 
 
 def _finish_build_failure(scenario_id, variant, run_id, run_dir, tree, cfg, meta, enforce):
-    """Scaffold for the 'image never built' path (scenario-010 fills in the
-    `image_build_ok` / `git_tree_resolved` checks and their weights)."""
-    markers = ("<<<<<<< ", "=======", ">>>>>>> ")
-    conflicts = []
-    for f in sorted(tree.rglob("*")):
-        if f.is_file() and not _is_transient(f):
-            try:
-                txt = f.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if any(m in txt for m in markers):
-                conflicts.append(f.relative_to(tree).as_posix())
+    """The 'image never built' path (PLAN §11.4; completed for scenario-010).
+
+    ``docker build`` failed and deploy was skipped. Score comes only from the
+    registered scenario checks that need no cluster (image_build_ok,
+    git_tree_resolved), using the SAME contract semantics as the normal
+    run_scenario path: a real checks.json, a weighted score, an evidence scan,
+    _check_expect problems, and an enforce-time SystemExit when the variant
+    misses its expectation. Nothing here touches the successful build/deploy
+    path.
+    """
+    from harness.evaluate import _SCENARIO_CHECKS, _conflict_marker_files
+
+    conflicts = _conflict_marker_files(tree)
 
     ev = cfg.get("evaluation", {}) or {}
     expect = ((ev.get("expect") or {}).get(variant)) or {}
+    scenario_checks = list(ev.get("checks") or [])
+    weight_overrides = dict(ev.get("weights") or {})
+    meta.setdefault("scenario_checks", scenario_checks)
+    meta.setdefault("weight_overrides", weight_overrides)
+
+    results: list[dict] = []
+    for cid in scenario_checks:
+        entry = _SCENARIO_CHECKS.get(cid)
+        if entry is None:
+            continue
+        default_w, fn = entry
+        weight = int(weight_overrides.get(cid, default_w))
+        try:
+            ok, reason = fn(run_dir=run_dir, namespace="", release=RELEASE, meta=meta)
+        except Exception as exc:  # noqa: BLE001 - a check crash is a FAIL, not a raise
+            ok, reason = False, f"check error: {exc}"
+        results.append(
+            {"id": cid, "weight": weight, "result": "PASS" if ok else "FAIL", "reason": reason}
+        )
+
+    denom = sum(c["weight"] for c in results) or 1
+    num = sum(c["weight"] for c in results if c["result"] == "PASS")
+    score = round(num / denom * 100)
+    (run_dir / "checks.json").write_text(
+        json.dumps({"checks": results, "score": score}, indent=2), encoding="utf-8"
+    )
+
+    violations = meta.get("anticheat_violations") or []
+    evidence = _evidence_scan(run_dir, expect.get("evidence", {}) or {})
+    problems = _check_expect(results, score, expect, violations)
+    if expect.get("evidence"):
+        missing = [k for k, okk in evidence.items() if not okk]
+        if missing:
+            problems.append(f"missing required evidence: {missing}")
+
     verdict = {
         "run_id": run_id,
         "scenario": scenario_id,
         "variant": variant,
-        "score": 0,
+        "score": score,
         "build_ok": False,
         "conflict_marker_files": conflicts,
-        "note": (
-            "docker build failed; deploy skipped. image_build_ok / "
-            "git_tree_resolved checks and weights land with scenario-010."
-        ),
         "expected": expect,
-        "matches_expectation": variant == "broken",
+        "evidence": evidence,
+        "anticheat_violations": violations,
+        "expectation_problems": problems,
+        "matches_expectation": not problems,
     }
     (run_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     (run_dir / "report.txt").write_text(
-        f"{run_id}\nBUILD FAILED — deploy skipped.\nSCORE: 0\n"
-        f"conflict markers in: {conflicts or 'none'}\n",
+        f"{run_id}\nBUILD FAILED — deploy skipped.\nSCORE: {score}\n"
+        f"conflict markers in: {conflicts or 'none'}\n"
+        + "".join(
+            f"{c['id']:<20} {c['weight']:>3}  {c['result']}  {c['reason']}\n" for c in results
+        ),
         encoding="utf-8",
     )
     _last_pointer(f"{scenario_id}-{variant}").write_text(run_id, encoding="utf-8")
-    print(f"{run_id}: BUILD FAILED (deploy skipped); conflict markers in {conflicts or 'none'}")
-    if enforce and variant == "golden":
-        raise SystemExit(f"{run_id}: golden variant failed to build")
-    return run_id, 0, verdict
+    print(
+        f"{run_id}: BUILD FAILED (deploy skipped); SCORE {score}; "
+        f"conflict markers in {conflicts or 'none'}"
+    )
+    if enforce and problems:
+        raise SystemExit(f"{run_id}: expectation not met -> {problems}")
+    return run_id, score, verdict
 
 
 def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_patch=None):

@@ -554,6 +554,57 @@ def _ci_gate_pass(*, run_dir, namespace, release, meta):
     return rc == 0, f"scripts/ci.sh exit {rc}{tail}"
 
 
+_CONFLICT_SKIP_PARTS = {"__pycache__", ".git", ".pytest_cache", ".ruff_cache", "node_modules"}
+
+
+def _conflict_marker_files(root):
+    """Files under `root` (recursively) that carry a Git conflict-marker line
+    (^<<<<<<< , ^=======$, ^>>>>>>> ). Binary/undecodable files are skipped."""
+    hits = []
+    if not root.is_dir():
+        return hits
+    for f in sorted(root.rglob("*")):
+        if not f.is_file() or _CONFLICT_SKIP_PARTS.intersection(f.parts):
+            continue
+        try:
+            txt = f.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for ln in txt.splitlines():
+            if ln == "=======" or ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> "):
+                hits.append(f.relative_to(root).as_posix())
+                break
+    return hits
+
+
+@register_scenario_check("image_build_ok", 20)
+def _image_build_ok(*, run_dir, namespace, release, meta):
+    """Owning scenario: scenario-010. The variant's ``docker build`` exited 0
+    (run_scenario records this on meta['build_ok']; the build-failure path sets
+    it False and captures build.log)."""
+    ok = meta.get("build_ok") is True
+    detail = ""
+    if not ok:
+        p = run_dir / "build.log"
+        if p.exists():
+            log = p.read_text(encoding="utf-8", errors="replace")
+            errln = next(
+                (ln.strip() for ln in reversed(log.splitlines())
+                 if "returned a non-zero code" in ln or "ERROR:" in ln or "error:" in ln),
+                "",
+            )
+            detail = f" :: {errln[:200]}" if errln else ""
+    return ok, f"docker build exit {'0' if ok else 'non-zero'}{detail}"
+
+
+@register_scenario_check("git_tree_resolved", 10)
+def _git_tree_resolved(*, run_dir, namespace, release, meta):
+    """Owning scenario: scenario-010. No file under the variant tree carries a
+    Git conflict-marker line."""
+    hits = _conflict_marker_files(run_dir / "tree")
+    return (not hits), ("clean" if not hits else f"conflict markers in: {sorted(set(hits))}")
+
+
 def evaluate(namespace: str, release: str, run_dir: pathlib.Path, meta: dict):
     results: list[dict] = []
 
