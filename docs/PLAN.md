@@ -1093,7 +1093,37 @@ order; none started before this matrix is approved.
   scenario-003 · scenario-004 (broken 10 / golden 100 / compose) · scenario-005
   (broken 50 / golden 100 / compose) · scenario-006 (broken 55 / golden 100 /
   compose) · scenario-007 (broken 10 / golden 100 / compose) all PASS.
-- **Next: M9 / scenario-008 — not started.**
+- **M9 / scenario-008 ✅ complete** — commit `929ad58` (branch
+  `continued-development`) *feat: add deterministic structured-log format
+  regression scenario*. Pre-implementation gate on `fc8f7e8`: `A1–A14`
+  (`make e2e-base`, SCORE 100) **and** scenario-001…007 (each broken / golden /
+  compose) all PASS; scoped teardown + integrity clean. Broken run twice →
+  deterministic **SCORE 65** with identical graded outcomes — `values.yaml`
+  `logFormat` `json`→`plain` leaves the Deployment 100 % healthy (rollout,
+  Ready, 0 restarts, endpoints, `GET /health` 200 → all six functional checks
+  PASS) but stdout is free-text, so `structured_logs_ok` FAIL; `verdict.json`
+  `logs_are_json: false`; evidence `logs_contains ['"GET /health']` confirms the
+  service is serving; universal §7.2 anti-cheat clean both runs. Golden →
+  **SCORE 100**, all eight checks PASS; `structured_logs_ok`:
+  `5/5 JSON lines; 1 access rec(s); stdout_lines this=20 >= base=16`;
+  `verdict.json` `logs_are_json: true`, `stdout_line_count: 20`,
+  `base_stdout_line_count: 16` (machine-derived by `make e2e-base` via
+  `run.py`'s fixed 10-request synthetic-load `measure_stdout_lines`, not
+  hard-coded). Anti-cheat clean (base §7.2 + golden-only
+  `structured_logging_intact` — `logFormat` exactly `json`, `logLevel ∈
+  {debug,info}` so access lines aren't suppressed, `app/obs.py` byte-identical
+  to base-v2, `LOG_FORMAT` still wired from `.Values.logFormat`); compose-check
+  byte-identical. Post-implementation full regression on the committed harness:
+  `A1–A14` (SCORE 100) **and** scenario-001…007 (broken 10/10/10/10/50/55/10,
+  golden 100, compose) **and** scenario-008 (broken 65 / golden 100 / compose)
+  all PASS; teardown + integrity clean (no `pfrl-*` ns, no kind cluster /
+  containers, `.state/kubeconfig` removed, default `~/.kube/config` unchanged).
+  Frozen-base rule respected — `harness/evaluate.py` append-only,
+  `harness/run.py` gains one additive `meta["stdout_line_count"]` block,
+  `harness/scenario.py` gains the anti-cheat rule + additive verdict keys; no
+  `app/` · `charts/` · `docker/` · `requirements.txt` · `scripts/` · `Makefile`
+  · `tests/` change.
+- **Next: M10 / scenario-009 — not started.**
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
@@ -1104,7 +1134,7 @@ order; none started before this matrix is approved.
 | M6 ✅ | 005 Service selector | no | + 004 | ~18 | ~3 |
 | M7 ✅ | 006 runs-as-root | no | + 005 | ~21 | ~3 |
 | M8 ✅ | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
-| M9 | 008 log-format regression | no | + 007 | ~28 | ~3 |
+| M9 ✅ | 008 log-format regression | no | + 007 | ~28 | ~3 |
 | M10 | 009 CI + health contract | no | + 008 | ~31 | ~5 |
 | M11 | 010 merge conflict | no (harness only) | + 009 | ~36 | ~4 |
 
