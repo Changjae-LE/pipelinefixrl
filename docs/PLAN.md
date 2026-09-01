@@ -1159,7 +1159,45 @@ order; none started before this matrix is approved.
   `harness/scenario.py` gains the guard + anti-cheat rule + two `_TREE_PATHS`
   entries; no `app/` · `charts/` · `docker/` · `requirements.txt` ·
   `scripts/` · `config/` · `Makefile` · `tests/` file modified.
-- **Next: M11 / scenario-010 — not started.**
+- **M11 / scenario-010 ✅ complete** — commit `eda6087` (branch
+  `continued-development`) *feat: add deterministic unresolved merge conflict
+  scenario*. Pre-implementation gate on `c2c9915`: `A1–A14` (`make e2e-base`,
+  SCORE 100) **and** scenario-001…009 (broken/golden/compose) all PASS. Broken
+  run twice → deterministic **SCORE 0** — `break.patch` commits raw Git conflict
+  markers into `requirements.txt`; `pip install` aborts
+  (`ERROR: Invalid requirement: '<<<<<<< HEAD'`), `docker build` exits non-zero,
+  the image is never produced, deploy is skipped. The completed
+  `_finish_build_failure` path (PLAN §11.4) runs the two cluster-free checks —
+  `image_build_ok` FAIL (`meta['build_ok']` False) and `git_tree_resolved` FAIL
+  — and writes a real `checks.json` + `verdict.json` with the normal path's
+  contract semantics: `score` 0, `evidence` `build_log_contains ['<<<<<<<']`
+  present, `conflict_marker_files == ['requirements.txt']`, `expectation_problems`
+  `[]`, `matches_expectation` True, universal §7.2 anti-cheat clean;
+  `enforce=True` would `SystemExit` on any mismatch. Golden → **SCORE 100** via
+  the normal build + deploy path, all nine checks PASS (`image_build_ok`:
+  `docker build exit 0`; `git_tree_resolved`: `clean`). Anti-cheat clean (base
+  §7.2 + golden-only `merge_resolved_cleanly` — no marker line in the tree,
+  `requirements.txt` keeps `fastapi` + `uvicorn` with version constraints,
+  `docker/Dockerfile` still pip-installs from `requirements.txt`); compose-check
+  byte-identical. Static integrity probes (all pass): the broken tree's
+  `docker build` genuinely raises and `build.log` names the `requirements.txt`
+  conflict as the cause (not an unrelated Docker/pip error); the golden tree's
+  `requirements.txt` **and** `docker/Dockerfile` are byte-identical to base;
+  the marker-category scan keeps `scenario-010/break.patch` as the sanctioned
+  fault fixture while every implementation / golden / doc file stays
+  marker-free (`git diff --check` clean). Post-implementation full regression on
+  the committed harness: `A1–A14` (SCORE 100) **and** scenario-001…009
+  (broken 10/10/10/10/50/55/10/65/50, golden 100, compose) **and**
+  scenario-010 (broken 0 / golden 100 / compose) all PASS. Teardown + integrity
+  clean. Frozen-base rule respected — `harness/evaluate.py` append-only,
+  `harness/scenario.py`'s only non-append change is the `_finish_build_failure`
+  build-failure path (explicitly designated by §11.4) plus the new anti-cheat
+  rule; no `app/` · `charts/` · `docker/` · `requirements.txt` · `scripts/` ·
+  `config/` · `Makefile` · `tests/` file modified.
+- **M-BE → M11 sequence complete on `continued-development`** (10 scenarios,
+  all deterministic broken/golden/compose, full regression green). `master`
+  remains at the submission tag `fc8f7e8`; the continued work lives on
+  `continued-development` (`eda6087` + its PLAN commit).
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
@@ -1172,7 +1210,7 @@ order; none started before this matrix is approved.
 | M8 ✅ | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
 | M9 ✅ | 008 log-format regression | no | + 007 | ~28 | ~3 |
 | M10 ✅ | 009 CI + health contract | no | + 008 | ~31 | ~5 |
-| M11 | 010 merge conflict | no (harness only) | + 009 | ~36 | ~4 |
+| M11 ✅ | 010 merge conflict | no (harness only) | + 009 | ~36 | ~4 |
 
 - **Per-scenario suites (002–010):** ≈ **32 min** total.
 - **Regression gates (M3–M11):** ≈ **182 min** total (each = `A1–A14` ~5 min +
