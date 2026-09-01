@@ -1123,7 +1123,43 @@ order; none started before this matrix is approved.
   `harness/scenario.py` gains the anti-cheat rule + additive verdict keys; no
   `app/` · `charts/` · `docker/` · `requirements.txt` · `scripts/` · `Makefile`
   · `tests/` change.
-- **Next: M10 / scenario-009 — not started.**
+- **M10 / scenario-009 ✅ complete** — commit `4ebb9c8` (branch
+  `continued-development`) *feat: add deterministic CI-gate + health-contract
+  regression scenario*. Approach **C** (approved): the check runs the real M-BE
+  `scripts/ci.sh` from inside the ephemeral tree — `_TREE_PATHS` gains `scripts/`
+  + `config/`, and a new `_assert_frozen_subtrees` guard (run after every patch
+  application, both variants) rejects any break/golden patch that touches
+  `scripts/` or `config/`. Pre-implementation gate on `98b8440`: `A1–A14`
+  (`make e2e-base`, SCORE 100) **and** scenario-001…008 (broken/golden/compose)
+  all PASS. Broken run twice → deterministic **SCORE 50** with identical graded
+  outcomes — `app/main.py` `/health` `{"status":"ok"}`→`{"status":"healthy"}`
+  leaves the pod `Ready` (functional backbone helm/rollout/deployment_ready/
+  pods_ready/endpoints PASS) but `http_health_ok` FAIL (body mismatch) and
+  `ci_gate_pass` FAIL (`scripts/ci.sh exit 1 (FAILED
+  tests/test_health.py::test_health_returns_ok …)`); `ci.log` evidence
+  `["FAILED","test_health_returns_ok"]` present; universal §7.2 anti-cheat
+  clean. Golden → **SCORE 100**, all eight checks PASS; `ci_gate_pass`:
+  `scripts/ci.sh exit 0` (full pytest → helm lint → helm template → docker
+  build → pin-policy, `ci: OK`). Anti-cheat clean (base §7.2 + golden-only
+  `ci_contract_intact` — tree `scripts/ci.sh` + `lib.sh` byte-identical to base,
+  no `tests/` file changed, `tests/` declares ≥ 6 `def test_`, `/health`
+  returns `{"status":"ok"}`, `Chart.yaml` version valid semver); compose-check
+  byte-identical. Static integrity probes (all pass): (1) tree `scripts/`
+  byte-identical to base; (2) `_assert_frozen_subtrees` raises `SystemExit` on
+  a tampered `scripts/ci.sh` and passes a clean tree; (3) the copied `lib.sh`
+  resolves `REPO_ROOT` to the ephemeral tree, not `/c/micro`; (4) the broken
+  tree makes the real tree-local `scripts/ci.sh` fail **specifically** at
+  `test_health_returns_ok` (not at build/lint); (5) the golden tree makes the
+  same `scripts/ci.sh` exit 0. Post-implementation full regression on the
+  committed harness: `A1–A14` (SCORE 100) **and** scenario-001…008
+  (broken 10/10/10/10/50/55/10/65, golden 100, compose) **and** scenario-009
+  (broken 50 / golden 100 / compose) all PASS — proving the `_TREE_PATHS`
+  expansion changes no prior scenario's behaviour. Teardown + integrity clean.
+  Frozen-base rule respected — `harness/evaluate.py` append-only,
+  `harness/scenario.py` gains the guard + anti-cheat rule + two `_TREE_PATHS`
+  entries; no `app/` · `charts/` · `docker/` · `requirements.txt` ·
+  `scripts/` · `config/` · `Makefile` · `tests/` file modified.
+- **Next: M11 / scenario-010 — not started.**
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
@@ -1135,7 +1171,7 @@ order; none started before this matrix is approved.
 | M7 ✅ | 006 runs-as-root | no | + 005 | ~21 | ~3 |
 | M8 ✅ | 007 ConfigMap ref | no | + 006 | ~24 | ~3.5 |
 | M9 ✅ | 008 log-format regression | no | + 007 | ~28 | ~3 |
-| M10 | 009 CI + health contract | no | + 008 | ~31 | ~5 |
+| M10 ✅ | 009 CI + health contract | no | + 008 | ~31 | ~5 |
 | M11 | 010 merge conflict | no (harness only) | + 009 | ~36 | ~4 |
 
 - **Per-scenario suites (002–010):** ≈ **32 min** total.
