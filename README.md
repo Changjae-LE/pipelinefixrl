@@ -29,7 +29,6 @@ the micro1 Agentic Workflows Hackathon.
 - **Repair agents** — `baseline` (offline no-LLM heuristic, 7/10) and `advanced`
   (deriving fixer, **10/10 derived**, golden replay only as a visible fallback);
   see "Baseline & advanced solutions". On `continued-development`.
-- Scenarios 008–010 (M9–M11) — not started.
 
 ## Prerequisites
 
