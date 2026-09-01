@@ -331,6 +331,179 @@ def _config_applied(*, run_dir, namespace, release, meta):
     return got == want, f"GET / tier={got!r} want={want!r} ({detail})"
 
 
+def _log_lines(run_dir) -> list[str]:
+    """Non-blank stdout lines from the run's collected pod logs
+    (logs/*.log, excluding *.previous.log)."""
+    out: list[str] = []
+    logs_dir = run_dir / "logs"
+    if logs_dir.is_dir():
+        for lf in sorted(logs_dir.glob("*.log")):
+            if lf.name.endswith(".previous.log"):
+                continue
+            for ln in lf.read_text(encoding="utf-8", errors="replace").splitlines():
+                if ln.strip():
+                    out.append(ln)
+    return out
+
+
+def _parse_json_logs(lines) -> tuple[list[dict], int]:
+    """(list of JSON-object lines, total non-blank line count)."""
+    objs: list[dict] = []
+    for ln in lines:
+        try:
+            v = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(v, dict):
+            objs.append(v)
+    return objs, len(lines)
+
+
+def _logs_are_json(run_dir, threshold: float = 0.95) -> bool:
+    """True iff there is >= 1 stdout line and >= `threshold` of non-blank lines
+    parse as JSON objects. Scenario-agnostic; feeds verdict.json `logs_are_json`."""
+    lines = _log_lines(run_dir)
+    if not lines:
+        return False
+    objs, total = _parse_json_logs(lines)
+    return (len(objs) / total) >= threshold
+
+
+def _stdout_line_count(run_dir) -> int:
+    """Count of non-blank stdout lines in the run's collected pod logs."""
+    return len(_log_lines(run_dir))
+
+
+def _burst_health(namespace: str, release: str, n: int) -> int:
+    """Open one port-forward to svc/<release>, wait until it serves, then issue
+    exactly `n` GET /health requests. Returns how many returned HTTP 200. A
+    fixed synthetic load so stdout line counts are comparable run to run."""
+    port = _free_port()
+    exe = tools.which("kubectl") or "kubectl"
+    env = dict(os.environ)
+    env["KUBECONFIG"] = str(KUBECONFIG)
+    env["PATH"] = tools.PATH
+    proc = subprocess.Popen(
+        [exe, "port-forward", f"svc/{release}", f"{port}:{VERSIONS.get('SVC_PORT', '80')}",
+         "-n", namespace],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                return 0
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2).read()
+                break
+            except Exception:  # noqa: BLE001 - transient during forward setup
+                time.sleep(1)
+        else:
+            return 0
+        ok = 0
+        for _ in range(n):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+                    if r.status == 200:
+                        ok += 1
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def measure_stdout_lines(namespace: str, release: str, n: int = 10) -> int:
+    """Issue a fixed synthetic load of `n` GET /health requests, let uvicorn
+    flush its access logs, then count non-blank stdout lines from
+    `kubectl logs deployment/<release>`. Identical procedure for a base run and a
+    scenario run, so the counts compare directly. Raises on a kubectl failure."""
+    _burst_health(namespace, release, n)
+    time.sleep(2)
+    r = tools.kubectl(["logs", f"deployment/{release}", "-n", namespace, "--tail=-1"], check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"kubectl logs failed: {(r.stderr or r.stdout or '').strip()[:200]}")
+    return sum(1 for ln in (r.stdout or "").splitlines() if ln.strip())
+
+
+def _base_stdout_line_count():
+    """The `stdout_line_count` recorded by the most recent base run
+    (harness.run.run_variant), or None if it cannot be read."""
+    from harness.paths import RUNS_DIR
+    try:
+        run_id = (RUNS_DIR / "last-base").read_text(encoding="utf-8").strip()
+        meta = json.loads((RUNS_DIR / run_id / "meta.json").read_text(encoding="utf-8"))
+        v = meta.get("stdout_line_count")
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) else None
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+@register_scenario_check("structured_logs_ok", 35)
+def _structured_logs_ok(*, run_dir, namespace, release, meta):
+    """Owning scenario: scenario-008.
+
+    PASS iff: >= 95 % of non-blank stdout lines are JSON objects; every object
+    carries {ts, level, msg}; >= 1 object is an HTTP access record with
+    {method, path, status} and 2xx status; a live GET /health through the
+    Service returns 200; and this healthy run's stdout line count (fixed
+    synthetic load) is >= the most recent base healthy run's — so "fixing" the
+    logs by raising logLevel to suppress the access lines is caught.
+
+    Records its measurements on ``meta['structured_logs']`` so run_scenario can
+    surface the same numbers in verdict.json (the M9 contract's logs_are_json /
+    stdout line counts) rather than a second, inconsistent snapshot."""
+    base = _base_stdout_line_count()
+    sl = {"logs_are_json": False, "json_ratio": 0.0, "access_records": 0,
+          "stdout_line_count": None, "base_stdout_line_count": base}
+    meta["structured_logs"] = sl
+
+    lines = _log_lines(run_dir)
+    if not lines:
+        return False, "no stdout lines captured"
+    objs, total = _parse_json_logs(lines)
+    ratio = len(objs) / total
+    sl["json_ratio"] = round(ratio, 4)
+    sl["logs_are_json"] = ratio >= 0.95
+    if ratio < 0.95:
+        return False, f"{len(objs)}/{total} stdout lines are valid JSON (need >=95%)"
+    bad = [o for o in objs if not {"ts", "level", "msg"} <= set(o)]
+    if bad:
+        return False, f"{len(bad)}/{len(objs)} JSON log objects lack required keys {{ts,level,msg}}"
+    access = [
+        o for o in objs
+        if {"method", "path", "status"} <= set(o)
+        and str(o.get("status")).isdigit() and 200 <= int(o["status"]) < 300
+    ]
+    sl["access_records"] = len(access)
+    if not access:
+        return False, "no structured 2xx HTTP access record on stdout"
+    if _burst_health(namespace, release, 1) < 1:
+        return False, "live GET /health through the Service did not return 200"
+    if base is None:
+        return False, "baseline stdout line count unavailable (run make e2e-base first)"
+    try:
+        this = measure_stdout_lines(namespace, release, 10)
+    except RuntimeError as e:
+        return False, f"could not measure stdout line count: {e}"
+    sl["stdout_line_count"] = this
+    if this < base:
+        return False, f"stdout line count {this} < base healthy {base} (access logging suppressed?)"
+    return True, (
+        f"{len(objs)}/{total} JSON lines; {len(access)} access rec(s); "
+        f"stdout_lines this={this} >= base={base}"
+    )
+
+
 def evaluate(namespace: str, release: str, run_dir: pathlib.Path, meta: dict):
     results: list[dict] = []
 

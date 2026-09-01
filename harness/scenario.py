@@ -19,7 +19,12 @@ import yaml
 
 from harness import tools
 from harness.collect import collect_all
-from harness.evaluate import evaluate
+from harness.evaluate import (
+    _base_stdout_line_count,
+    _logs_are_json,
+    _stdout_line_count,
+    evaluate,
+)
 from harness.paths import REPO_ROOT, RUNS_DIR, VERSIONS, ensure_state_dirs
 from harness.report import write_report
 from harness.run import (
@@ -174,6 +179,12 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
           podSecurityContext.seccompProfile stays RuntimeDefault,
           securityContext.runAsUser is an integer >= 1000, and deployment.yaml
           adds no privileged/SYS_ADMIN container and no volume mounted at /.
+      structured_logging_intact: true
+          values.yaml logFormat is exactly "json" (no fallback-triggering
+          value), logLevel is debug/info (access lines not suppressed),
+          app/obs.py is byte-identical to base-v2 (the fix is the config, not
+          the formatter), and deployment.yaml still wires LOG_FORMAT from
+          .Values.logFormat.
       config_wiring_intact: true
           deployment.yaml still sources APP_TIER via configMapKeyRef keyed by
           .Values.config.key, the app-config ConfigMap is still templated from
@@ -263,6 +274,19 @@ def _scenario_anticheat(cfg: dict, tree: pathlib.Path, loaded_tags: list[str]) -
             viol.append("app/main.py no longer reads APP_TIER from the environment")
         if not str((tv.get("config") or {}).get("tier", "")).strip():
             viol.append("values.yaml config.tier is empty")
+
+    if rules.get("structured_logging_intact"):
+        if tv.get("logFormat") != "json":
+            viol.append(f"values.yaml logFormat must be exactly \"json\" (got {tv.get('logFormat')!r})")
+        if str(tv.get("logLevel", "")).lower() not in ("debug", "info"):
+            viol.append(f"values.yaml logLevel must be debug/info, not raised to suppress access logs (got {tv.get('logLevel')!r})")
+        tree_obs = (tree / "app" / "obs.py").read_bytes() if (tree / "app" / "obs.py").exists() else b""
+        base_obs = (REPO_ROOT / "app" / "obs.py").read_bytes()
+        if tree_obs != base_obs:
+            viol.append("app/obs.py changed from base-v2 (the fix is the config value, not the formatter)")
+        dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
+        if "name: LOG_FORMAT" not in dep or ".Values.logFormat" not in dep:
+            viol.append("deployment.yaml no longer wires LOG_FORMAT from .Values.logFormat")
     return viol
 
 
@@ -463,6 +487,11 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_pat
         if missing:
             problems.append(f"missing required evidence: {missing}")
 
+    # Observability signals (scenario-008 / M9 contract; additive keys, harmless
+    # for other scenarios). When structured_logs_ok ran it recorded its own
+    # measurements on meta -> use those so verdict.json and the check agree on
+    # one metric; otherwise fall back to the collected-log snapshot.
+    _sl = meta.get("structured_logs") or {}
     verdict = {
         "run_id": run_id,
         "scenario": scenario_id,
@@ -473,6 +502,9 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_pat
         "anticheat_violations": violations,
         "expectation_problems": problems,
         "matches_expectation": not problems,
+        "logs_are_json": _sl.get("logs_are_json", _logs_are_json(run_dir)),
+        "stdout_line_count": _sl.get("stdout_line_count", _stdout_line_count(run_dir)),
+        "base_stdout_line_count": _sl.get("base_stdout_line_count", _base_stdout_line_count()),
     }
     (run_dir / "verdict.json").write_text(json.dumps(verdict, indent=2), encoding="utf-8")
 

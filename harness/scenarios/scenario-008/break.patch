@@ -1,0 +1,5 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -65 +65 @@
+-logFormat: json      # json | plain
++logFormat: plain      # json | plain

@@ -109,6 +109,17 @@ def run_variant(variant: str = "base", expect_healthy: bool = True) -> tuple[str
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
     collect_all(namespace, RELEASE, run_dir)
+    # Record a machine-derived baseline for scenario-008's stdout line-count
+    # anti-cheat: same fixed synthetic load the scenario check uses. Additive
+    # meta field; instrumentation must never fail the run.
+    try:
+        from harness.evaluate import measure_stdout_lines
+
+        meta["stdout_line_count"] = measure_stdout_lines(namespace, RELEASE)
+    except Exception as exc:  # noqa: BLE001
+        meta["stdout_line_count"] = None
+        meta["stdout_line_count_error"] = str(exc)
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=2))
     checks, score = evaluate(namespace, RELEASE, run_dir, meta)
     text = write_report(run_dir, meta, checks, score)
     print(text)
