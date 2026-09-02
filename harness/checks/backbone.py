@@ -165,3 +165,63 @@ def _service_selects_pods(*, run_dir, namespace, release, meta):
     if ready_targets < 1:
         return False, "no EndpointSlice endpoint resolves to a Ready pod of the Deployment"
     return True, f"selector matches Deployment; {ready_targets} ready endpoint(s)"
+
+
+@register_scenario_check("service_ports_wired", 15)
+def _service_ports_wired(*, run_dir, namespace, release, meta):
+    """PASS iff (clause A) the Service exposes the benchmark's published
+    service port (the SVC_PORT deploy contract, default 80 — the port every
+    consumer, including the health probe, connects to) AND (clause B) that
+    port's targetPort corresponds to a containerPort actually declared by the
+    workload's pods. Relationship check over collected runtime objects only —
+    no reference-answer material is consulted. Owning scenarios: held-out h01
+    (targetPort mismatch → clause B) and h03 (published port absent →
+    clause A)."""
+    published = int(VERSIONS.get("SVC_PORT", "80"))
+    svcs = _load(run_dir, "services.json")
+    svc = next(
+        (s for s in (svcs.get("items") or []) if (s.get("metadata") or {}).get("name") == release),
+        None,
+    )
+    if svc is None:
+        return False, f"Service {release!r} not found"
+    ports = (svc.get("spec") or {}).get("ports") or []
+    if not ports:
+        return False, "clause A: Service declares no ports"
+    svc_ports = [p.get("port") for p in ports]
+    if published not in svc_ports:
+        return False, (
+            f"clause A: Service ports {svc_ports} do not expose the published "
+            f"service port {published}"
+        )
+
+    cport_nums, cport_names = set(), set()
+    for pod in _load(run_dir, "pods.json").get("items") or []:
+        for c in ((pod.get("spec") or {}).get("containers") or []):
+            for cp in c.get("ports") or []:
+                if cp.get("containerPort") is not None:
+                    cport_nums.add(cp["containerPort"])
+                if cp.get("name"):
+                    cport_names.add(cp["name"])
+    if not cport_nums:
+        return False, "clause B: no containerPort declared on any pod"
+
+    bad = []
+    for p in ports:
+        if p.get("port") != published:
+            continue
+        tp = p.get("targetPort", p.get("port"))
+        if isinstance(tp, int):
+            if tp not in cport_nums:
+                bad.append(tp)
+        elif tp not in cport_names:
+            bad.append(tp)
+    if bad:
+        return False, (
+            f"clause B: Service targetPort {bad} does not correspond to a declared "
+            f"containerPort {sorted(cport_nums)}"
+        )
+    return True, (
+        f"published port {published} exposed; targetPort reaches containerPort "
+        f"{sorted(cport_nums)}"
+    )

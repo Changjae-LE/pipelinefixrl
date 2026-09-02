@@ -17,6 +17,8 @@ EXPECTED_RULES = {
     "tag_override_loaded_or_empty", "min_memory", "image_ref_wired",
     "service_wiring_intact", "security_posture_intact", "config_wiring_intact",
     "structured_logging_intact", "ci_contract_intact", "merge_resolved_cleanly",
+    # Improvement 2 benchmark-side addition (held-out h01/h03 port relationships)
+    "service_ports_intact",
 }
 
 
@@ -32,10 +34,10 @@ def _edit(path, old, new):
 
 
 # --- registry shape --------------------------------------------------------
-def test_registry_has_exactly_nine_rules():
+def test_registry_has_exactly_ten_rules():
     assert set(_ANTICHEAT_RULES) == EXPECTED_RULES
     assert set(_RULE_ORDER) == EXPECTED_RULES
-    assert len(_RULE_ORDER) == 9  # deterministic order, no dupes
+    assert len(_RULE_ORDER) == 10  # deterministic order, no dupes
 
 
 def test_unknown_rule_is_rejected(base_tree):
@@ -91,6 +93,7 @@ _CLEAN_CFG = {
     "structured_logging_intact": True,
     "ci_contract_intact": True,
     "merge_resolved_cleanly": True,
+    "service_ports_intact": True,
 }
 
 

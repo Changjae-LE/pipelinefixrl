@@ -1,0 +1,5 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -19 +19 @@
+-  targetPort: 9090
++  targetPort: 8000

@@ -68,6 +68,16 @@ def cmd_agent_matrix(args):
     fix_agent.eval_matrix(ids)
 
 
+def cmd_agent_generalization(args):
+    from harness import generalization
+    if args.golden_check:
+        generalization.golden_validate(args.only)
+        return
+    rows = generalization.run_first_shot(args.only)
+    if args.archive:
+        generalization.write_first_shot_artifact(rows)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="harness", description="PipelineFixRL harness")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -124,6 +134,19 @@ def main(argv=None):
                              "and write the results matrix")
     am.add_argument("--id", default=None, help="restrict to a single scenario id")
     am.set_defaults(func=cmd_agent_matrix)
+
+    gen = sub.add_parser("agent-generalization",
+                         help="held-out first-shot evaluation: broken then the FROZEN "
+                              "advanced agent with golden fallback disabled (h01..h03)")
+    gen.add_argument("--only", default=None,
+                     help="comma-separated held-out ids, e.g. h01,h03")
+    gen.add_argument("--archive", action="store_true",
+                     help="write the tracked official evidence artifact "
+                          "(docs/evidence/generalization-first-shot.json)")
+    gen.add_argument("--golden-check", action="store_true",
+                     help="post-archive step: held-out golden 100 + compose round-trip "
+                          "(never run before the first-shot result is archived)")
+    gen.set_defaults(func=cmd_agent_generalization)
 
     args = p.parse_args(argv)
     args.func(args)

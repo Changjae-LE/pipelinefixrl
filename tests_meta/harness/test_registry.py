@@ -16,6 +16,8 @@ EXPECTED = {
     "ci_gate_pass": 30,
     "image_build_ok": 20,
     "git_tree_resolved": 10,
+    # Improvement 2 benchmark-side addition (held-out h01/h03 port relationships)
+    "service_ports_wired": 15,
 }
 
 

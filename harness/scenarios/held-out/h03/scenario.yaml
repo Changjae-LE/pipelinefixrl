@@ -1,0 +1,65 @@
+# HELD-OUT generalization scenario (Improvement 2). Created AFTER the agent
+# freeze commit 8ccbe0d62df1c336e2384d45486db52194630892; the frozen repair
+# implementation contains no reference to this scenario.
+# Novelty class: B — a genuinely novel fault relationship: no frozen primitive
+# reasons about the Service's PUBLISHED port vs the benchmark's public service
+# port contract (the frozen service_wiring primitive only aligns
+# targetPort <-> containerPort).
+id: h03
+title: Service published-port contract broken
+category: kubernetes/networking
+difficulty: medium
+description: >
+  charts/app/values.yaml moves service.port from the published contract port 80
+  to 8081. The pod is Running and Ready, the selector matches, the
+  EndpointSlice lists a ready endpoint, and targetPort still reaches the
+  container — but the Service no longer offers the port every consumer
+  (including the benchmark's health probe) connects to, so a connection to the
+  published port cannot even be established.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-h03
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 45
+  restart_threshold: 0
+
+  checks: [service_ports_wired]
+  weights:
+    rollout_complete: 15
+    deployment_ready: 15
+    pods_ready: 10
+    service_ports_wired: 15
+
+  anticheat:
+    service_wiring_intact: true
+    service_ports_intact: true
+
+  expect:
+    broken:
+      score_max: 65
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+      must_fail:
+        - http_health_ok
+        - service_ports_wired
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - service_ports_wired
+      anticheat_clean: true

@@ -16,7 +16,7 @@ PY   := $(VENV)/Scripts/python.exe
 # Scenarios with generated targets (scenario-001 keeps its explicit block below).
 SCENARIOS := 002 003 004 005 006 007 008 009 010
 
-.PHONY: baseline advanced eval-agents agents-matrix test-fast lint-py compose-all quick help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
+.PHONY: baseline advanced eval-agents agents-matrix generalization test-fast lint-py compose-all quick help setup doctor kind-up kind-down test lint ci build deploy-base verify-base clean-ns e2e-base \
         scenario-001-broken scenario-001-golden scenario-001 scenario-001-compose e2e-scenario-001 eval \
         $(foreach s,$(SCENARIOS),scenario-$(s) scenario-$(s)-broken scenario-$(s)-golden scenario-$(s)-compose)
 
@@ -140,6 +140,12 @@ eval-agents:
 # with advanced repair_mode / derived-vs-fallback provenance). Needs kind up.
 agents-matrix:
 	"$(PY)" -m harness agent-matrix
+
+# Held-out generalization first-shot: broken then the FROZEN advanced agent
+# with golden fallback disabled (h01..h03). Needs kind up. The official archived
+# run additionally passes --archive via the harness CLI.
+generalization:
+	"$(PY)" -m harness agent-generalization
 
 # --- fast local developer loop (no kind / Docker / network) ---------------
 test-fast:                         ## fast unit + app tests (no kind)

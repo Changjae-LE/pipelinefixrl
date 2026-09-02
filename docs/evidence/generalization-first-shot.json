@@ -1,0 +1,124 @@
+{
+  "artifact": "official held-out generalization first-shot result",
+  "agent_freeze_commit": "8ccbe0d62df1c336e2384d45486db52194630892",
+  "protocol": "per scenario: broken (contract enforced) -> frozen advanced with allow_golden_fallback=False under an active golden-access guard -> archived before any held-out golden run; golden fallback can never count as generalization success",
+  "generated_utc": "2026-09-02T04:58:37Z",
+  "scenarios": [
+    {
+      "scenario": "h01",
+      "novelty": "A",
+      "broken": 65,
+      "first_derived_score": 100,
+      "final_derived_score": 100,
+      "derived_rounds_attempted": 1,
+      "derived_rounds": [
+        {
+          "round": 1,
+          "evidence_sources": [
+            "events.txt",
+            "events.json",
+            "pods.json",
+            "logs/",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "service_wiring",
+              "diagnosis": "service_target_port",
+              "file": "charts/app/values.yaml"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "service_wiring.service_target_port: Service targetPort 9090 does not correspond to the container's listen port 8000; pods can be healthy while traffic breaks \u2014 aligned targetPort to containerPort",
+          "files_modified": [
+            "charts/app/values.yaml"
+          ],
+          "validation_score": 100,
+          "validation_passed": true
+        }
+      ],
+      "repair_mode": "derived",
+      "fallback_used": false,
+      "final_score": 100,
+      "files_modified": [
+        "charts/app/values.yaml"
+      ],
+      "rationale": "service_wiring.service_target_port: Service targetPort 9090 does not correspond to the container's listen port 8000; pods can be healthy while traffic breaks \u2014 aligned targetPort to containerPort",
+      "derived_success": true,
+      "scenario_hashes": {
+        "scenario.yaml": "614944479a8334427f36e8c219cd061e97fceb54216384f9fb3d6008d14a833e",
+        "break.patch": "a4083c06064b9340bf32499f98d77f56bd27eaac84d33afbae4d65b1dcfaf5d3",
+        "golden.patch": "2b2f9f7e1a5b5082a5e260c81859c8a594dfcd2219413a6ad5b64342c8d8a0ed"
+      }
+    },
+    {
+      "scenario": "h02",
+      "novelty": "A",
+      "broken": 10,
+      "first_derived_score": 100,
+      "final_derived_score": 100,
+      "derived_rounds_attempted": 1,
+      "derived_rounds": [
+        {
+          "round": 1,
+          "evidence_sources": [
+            "events.txt",
+            "events.json",
+            "pods.json",
+            "logs/",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "runtime_constraints",
+              "diagnosis": "unschedulable_resources",
+              "file": "charts/app/values.yaml"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "runtime_constraints.unschedulable_resources: resource request (memory 68719476736B / cpu 50m) exceeds what any node can satisfy \u2014 the pod can never schedule; clamped requests/limits back to the chart's working floor",
+          "files_modified": [
+            "charts/app/values.yaml"
+          ],
+          "validation_score": 100,
+          "validation_passed": true
+        }
+      ],
+      "repair_mode": "derived",
+      "fallback_used": false,
+      "final_score": 100,
+      "files_modified": [
+        "charts/app/values.yaml"
+      ],
+      "rationale": "runtime_constraints.unschedulable_resources: resource request (memory 68719476736B / cpu 50m) exceeds what any node can satisfy \u2014 the pod can never schedule; clamped requests/limits back to the chart's working floor",
+      "derived_success": true,
+      "scenario_hashes": {
+        "scenario.yaml": "5f00c7ad5e5c52e6512695a17624ac9ea891caf4db184e0890a8423d853222fe",
+        "break.patch": "176ab7a6dd9b7a9371d22b7e4535bb1db85f63fa63b285f235be9d54c5b11a30",
+        "golden.patch": "2e54d3028bf5b0fb0f395825784266bcbccb56734f67ec1ed98cdfdcabf4b113"
+      }
+    },
+    {
+      "scenario": "h03",
+      "novelty": "B",
+      "broken": 65,
+      "first_derived_score": null,
+      "final_derived_score": null,
+      "derived_rounds_attempted": 0,
+      "derived_rounds": [],
+      "repair_mode": "no_change",
+      "fallback_used": false,
+      "final_score": 65,
+      "files_modified": [],
+      "rationale": "no repair primitive matched the broken tree / evidence",
+      "derived_success": false,
+      "scenario_hashes": {
+        "scenario.yaml": "71169af4f389fc935af5df1c8a3233f6ce23340cb69b7a8ba8440d98ca6d7c0e",
+        "break.patch": "793ec6d071abf768e326e922173cf3117c4a85a3b572b6765bcc969992f848e1",
+        "golden.patch": "446a3b7865d09d02b8fb6aba1edd93fcc62beef4cdd0e14afa608aca7334f0ea"
+      }
+    }
+  ],
+  "generalization_success": "2/3 derived",
+  "generalization_rate": 0.6666666666666666
+}

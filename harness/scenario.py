@@ -82,7 +82,16 @@ __all__ = [
 
 
 def _scenario_dir(sid: str) -> pathlib.Path:
-    return SCENARIOS_DIR / sid
+    # scenario-001..010 resolve exactly as before; only an id with no directory
+    # of its own falls through to the structurally separate held-out set
+    # (harness/scenarios/held-out/<sid>, Improvement 2 generalization benchmark).
+    d = SCENARIOS_DIR / sid
+    if d.is_dir():
+        return d
+    held = SCENARIOS_DIR / "held-out" / sid
+    if held.is_dir():
+        return held
+    return d
 
 
 def _load_cfg(sid: str) -> dict:

@@ -1,0 +1,64 @@
+# HELD-OUT generalization scenario (Improvement 2). Created AFTER the agent
+# freeze commit 8ccbe0d62df1c336e2384d45486db52194630892; the frozen repair
+# implementation contains no reference to this scenario.
+# Novelty class: A — a held-out INSTANCE of a general relationship the frozen
+# runtime_constraints primitive already represents (Unschedulable request).
+id: h02
+title: Resource request no node can satisfy
+category: kubernetes/scheduling
+difficulty: medium
+description: >
+  charts/app/values.yaml raises the memory request AND limit to 64Gi — a valid
+  manifest (request <= limit), but far beyond any kind node's allocatable
+  capacity — so the scheduler can never place the pod. The pod
+  stays Pending forever with FailedScheduling / Insufficient memory events; no
+  container ever starts, nothing is OOMKilled, and there are zero restarts.
+  The broken expectation REQUIRES the FailedScheduling evidence: if an
+  environment could somehow satisfy the request, the run fails loudly instead
+  of silently measuring a different fault.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-h02
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 60
+  restart_threshold: 0
+
+  # base anti-cheat plus the memory floor: a "fix" that shrinks requests below
+  # a startable footprint is rejected.
+  anticheat:
+    min_memory:
+      requests: 32Mi
+      limits: 64Mi
+
+  expect:
+    broken:
+      score_max: 10
+      must_pass: [helm_release_ok]
+      must_fail:
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      evidence:
+        events_contains:
+          - "FailedScheduling"
+          - "Insufficient memory"
+        pods_json_contains:
+          - "Pending"
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      anticheat_clean: true

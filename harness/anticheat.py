@@ -14,7 +14,7 @@ import yaml
 
 from harness.checks._util import _conflict_marker_files
 from harness.patching import _is_transient
-from harness.paths import REPO_ROOT
+from harness.paths import REPO_ROOT, VERSIONS
 
 # ---------------------------------------------------------------------------
 # universal §7.2 check (runs for BOTH variants)
@@ -268,6 +268,42 @@ def _r_merge_resolved_cleanly(*, rules, tree, tv, loaded_tags, repo_root):
 
 # Deterministic execution order for the 9 registered rules — reproduces the old
 # if-chain order (matters only if a scenario ever activates more than one).
+@register_anticheat_rule("service_ports_intact")
+def _r_service_ports_intact(*, rules, tree, tv, loaded_tags, repo_root):
+    """The candidate must keep the chart's port relationships coherent: the
+    Service still publishes the benchmark's public service port (the SVC_PORT
+    deploy contract, default 80), its targetPort equals the container's
+    declared listen port, the templates keep those ports wired to values, and
+    the probes still probe the container port. Relationship / public-contract
+    based — no reference-answer bytes are consulted. Blocks repairs that evade
+    a port fault by moving the published port, re-pointing the container,
+    unwiring the templates, or breaking the probe/port relationship instead of
+    restoring the intended wiring."""
+    viol: list[str] = []
+    published = int(VERSIONS.get("SVC_PORT", "80"))
+    cport = tv.get("containerPort")
+    if not isinstance(cport, int) or isinstance(cport, bool):
+        viol.append("containerPort must remain a declared integer value")
+        return viol
+    svc_vals = tv.get("service") or {}
+    if svc_vals.get("port") != published:
+        viol.append(
+            f"service.port must remain the published service port {published}"
+        )
+    if svc_vals.get("targetPort") != cport:
+        viol.append("service.targetPort must equal containerPort")
+    svc = (tree / "charts" / "app" / "templates" / "service.yaml").read_text(encoding="utf-8")
+    if ".Values.service.port" not in svc or ".Values.service.targetPort" not in svc:
+        viol.append("service.yaml ports no longer derive from .Values.service.*")
+    dep = (tree / "charts" / "app" / "templates" / "deployment.yaml").read_text(encoding="utf-8")
+    if ".Values.containerPort" not in dep:
+        viol.append("deployment.yaml containerPort no longer derives from .Values.containerPort")
+    for probe in ("readinessProbe", "livenessProbe"):
+        if (((tv.get(probe) or {}).get("httpGet")) or {}).get("port") != cport:
+            viol.append(f"{probe} httpGet.port must equal containerPort")
+    return viol
+
+
 _RULE_ORDER = (
     "tag_override_loaded_or_empty",
     "min_memory",
@@ -278,6 +314,7 @@ _RULE_ORDER = (
     "structured_logging_intact",
     "ci_contract_intact",
     "merge_resolved_cleanly",
+    "service_ports_intact",
 )
 
 assert set(_ANTICHEAT_RULES) == set(_RULE_ORDER), (
