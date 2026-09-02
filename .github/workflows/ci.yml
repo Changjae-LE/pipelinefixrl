@@ -15,6 +15,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the freeze-integrity tests assert over commit ranges
+          # (e.g. no commit between the v1 agent freeze and the v1 final commit
+          # touched harness/agents/**). The default shallow checkout has only
+          # one commit, so those revisions are absent and `git log A..B` fails
+          # with "Invalid revision range".
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
