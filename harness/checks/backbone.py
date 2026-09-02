@@ -225,3 +225,24 @@ def _service_ports_wired(*, run_dir, namespace, release, meta):
         f"published port {published} exposed; targetPort reaches containerPort "
         f"{sorted(cport_nums)}"
     )
+
+
+@register_scenario_check("workload_capacity", 15)
+def _workload_capacity(*, run_dir, namespace, release, meta):
+    """PASS iff the Deployment is scheduled to run capacity at all — desired
+    replicas >= 1 — AND every desired replica is ready. `deployment_ready`
+    compares ready against desired and therefore passes vacuously when desired
+    is 0; this check states whether the workload actually has running capacity.
+    Reports the observed state; it does not prescribe a repair."""
+    dep = _load(run_dir, "rollout.json")
+    spec = (dep.get("spec") or {})
+    status = (dep.get("status") or {})
+    desired = spec.get("replicas")
+    ready = status.get("readyReplicas", 0) or 0
+    if desired is None:
+        return False, "Deployment declares no replica count"
+    if desired < 1:
+        return False, f"Deployment desired replicas={desired}; workload has no capacity"
+    if ready != desired:
+        return False, f"ready replicas {ready} != desired {desired}"
+    return True, f"desired={desired} ready={ready}"

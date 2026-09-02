@@ -1,0 +1,6 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -58,2 +58 @@
+-    drop:
+-      - ALL
++    drop: []

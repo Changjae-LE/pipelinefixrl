@@ -1,0 +1,9 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -32 +32 @@
+-    path: /health
++    path: /ready
+@@ -58,2 +58 @@
+-    drop:
+-      - ALL
++    drop: []

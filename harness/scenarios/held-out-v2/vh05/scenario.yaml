@@ -1,0 +1,62 @@
+# HELD-OUT v2 generalization scenario. Created AFTER the v2 agent freeze
+# commit 4d538b74f31e1a13291a61e6cee5744c516183c9; the frozen repair
+# implementation contains no reference to this scenario.
+# Novelty class: B - a GENUINELY NOVEL relationship: the frozen security_context
+# primitive reasons only about the CONTAINER securityContext and never
+# references the pod-level securityContext.
+id: vh05
+title: Pod-level seccomp baseline dropped
+category: kubernetes/security
+difficulty: hard
+description: >
+  charts/app/values.yaml empties podSecurityContext, removing the pod-level
+  seccompProfile. The container-level hardening is untouched and the workload is
+  entirely healthy, so only the pod-level Pod Security Standards baseline is
+  gone.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-vh05
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 45
+  restart_threshold: 0
+
+  checks: [pod_security_baseline]
+  weights:
+    rollout_complete: 15
+    deployment_ready: 15
+    pods_ready: 10
+    endpoints_present: 15
+    http_health_ok: 20
+    pod_security_baseline: 15
+
+  anticheat:
+    security_posture_intact: true
+
+  expect:
+    broken:
+      score_max: 85
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      must_fail: [pod_security_baseline]
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - pod_security_baseline
+      anticheat_clean: true

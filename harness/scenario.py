@@ -17,6 +17,7 @@ module is the run orchestrator.
 
 import json
 import pathlib
+import time
 
 import yaml
 
@@ -88,9 +89,10 @@ def _scenario_dir(sid: str) -> pathlib.Path:
     d = SCENARIOS_DIR / sid
     if d.is_dir():
         return d
-    held = SCENARIOS_DIR / "held-out" / sid
-    if held.is_dir():
-        return held
+    for parent in ("held-out", "held-out-v2"):
+        held = SCENARIOS_DIR / parent / sid
+        if held.is_dir():
+            return held
     return d
 
 
@@ -325,6 +327,15 @@ def run_scenario(scenario_id: str, variant: str, enforce: bool = True, agent_pat
 
     meta.update(deploy(tag, namespace, tree=tree, timeout=timeout))
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    # Optional observation window: some faults only manifest after the rollout
+    # reports success (e.g. a liveness probe that kills a container that has
+    # already passed readiness). A scenario declares how long to observe before
+    # the snapshot is taken. Default 0 — no existing scenario changes behavior.
+    settle = int(ev.get("settle_seconds", 0) or 0)
+    if settle > 0:
+        print(f"observing for {settle}s before collecting (settle_seconds)")
+        time.sleep(settle)
 
     collect_all(namespace, RELEASE, run_dir)
     checks, score = evaluate(namespace, RELEASE, run_dir, meta)

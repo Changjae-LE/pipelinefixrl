@@ -1,0 +1,7 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -48 +48,3 @@
+-podSecurityContext: {}
++podSecurityContext:
++  seccompProfile:
++    type: RuntimeDefault

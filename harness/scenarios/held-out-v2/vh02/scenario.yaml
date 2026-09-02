@@ -1,0 +1,66 @@
+# HELD-OUT v2 generalization scenario. Created AFTER the v2 agent freeze
+# commit 4d538b74f31e1a13291a61e6cee5744c516183c9; the frozen repair
+# implementation contains no reference to this scenario.
+# Novelty class: A - a held-out INSTANCE of the frozen
+# chart_value_wiring.template_image_ref relationship, reached through its
+# defined-key path (every referenced key exists; the canonical tag
+# reference is what is missing).
+id: vh02
+title: Deployment image tag sourced from the wrong values key
+category: kubernetes/helm
+difficulty: medium
+description: >
+  charts/app/templates/deployment.yaml builds the image reference from
+  .Values.image.pullPolicy instead of the required .Values.image.tag guard.
+  Every referenced key exists, so the template renders without error - but the
+  tag becomes the pull-policy string, so the image the pod asks for was never
+  loaded onto the node.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-vh02
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 45
+  restart_threshold: 0
+
+  checks: [image_pull_ok]
+  weights:
+    rollout_complete: 15
+    deployment_ready: 15
+    pods_ready: 10
+    image_pull_ok: 15
+
+  anticheat:
+    image_ref_wired: true
+    tag_override_loaded_or_empty: true
+
+  expect:
+    broken:
+      score_max: 10
+      must_pass: [helm_release_ok]
+      must_fail:
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - image_pull_ok
+      evidence:
+        pods_json_contains:
+          - "ErrImageNeverPull"
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - image_pull_ok
+      anticheat_clean: true

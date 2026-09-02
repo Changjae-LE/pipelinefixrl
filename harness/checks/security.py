@@ -47,3 +47,29 @@ def _caps_dropped(*, run_dir, namespace, release, meta):
     drop = caps.get("drop") or []
     add = caps.get("add") or []
     return ("ALL" in drop and not add), f"drop={drop} add={add}"
+
+
+@register_scenario_check("pod_security_baseline", 15)
+def _pod_security_baseline(*, run_dir, namespace, release, meta):
+    """PASS iff every applied pod carries a POD-level securityContext declaring a
+    seccompProfile of a type the Kubernetes Pod Security Standards 'restricted'
+    profile permits (RuntimeDefault or Localhost). Pod-level baseline only — the
+    container-level posture is covered by the other checks in this module.
+    Reports the observed state; it does not prescribe a repair."""
+    pods = (_load(run_dir, "pods.json") or {}).get("items") or []
+    if not pods:
+        return False, "no pods to evaluate"
+    allowed = {"RuntimeDefault", "Localhost"}
+    bad = []
+    for p in pods:
+        name = (p.get("metadata") or {}).get("name", "?")
+        psc = ((p.get("spec") or {}).get("securityContext")) or {}
+        got = (psc.get("seccompProfile") or {}).get("type")
+        if got not in allowed:
+            bad.append(f"{name}: pod securityContext.seccompProfile.type={got!r}")
+    if bad:
+        return False, (
+            "pod-level seccompProfile is not a Pod Security Standards "
+            f"'restricted' type {sorted(allowed)}: " + "; ".join(sorted(bad))
+        )
+    return True, f"pod-level seccompProfile present on {len(pods)} pod(s)"

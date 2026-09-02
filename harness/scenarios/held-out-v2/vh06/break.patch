@@ -1,0 +1,5 @@
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -1 +1 @@
+-replicaCount: 1
++replicaCount: 0

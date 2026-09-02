@@ -1,0 +1,53 @@
+# HELD-OUT v2 generalization scenario. Created AFTER the v2 agent freeze
+# commit 4d538b74f31e1a13291a61e6cee5744c516183c9; the frozen repair
+# implementation contains no reference to this scenario.
+# Novelty class: A - a held-out INSTANCE of the frozen http_contract.probe_port
+# relationship (probe port vs containerPort). It is the only frozen
+# diagnosis with no development-scenario instance.
+id: vh01
+title: Liveness probe cannot reach the container
+category: kubernetes/probes
+difficulty: medium
+description: >
+  charts/app/values.yaml points the livenessProbe at port 9000 while the
+  container listens on containerPort 8000. Readiness (still on 8000) passes, so
+  the rollout reports success — then the liveness probe fails repeatedly and
+  the kubelet kills and restarts the container. The scenario observes the
+  workload past the liveness failureThreshold before scoring.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-vh01
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 60
+  # liveness: initialDelay 5s + 3 x period 10s => first kill at ~25s. Observe
+  # past that so the restart is part of the snapshot.
+  settle_seconds: 60
+  restart_threshold: 0
+
+  anticheat:
+    probe_contract_intact: true
+
+  expect:
+    broken:
+      score_max: 85
+      must_pass: [helm_release_ok]
+      must_fail: [pods_ready]
+      evidence:
+        events_contains:
+          - "Liveness probe failed"
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      anticheat_clean: true

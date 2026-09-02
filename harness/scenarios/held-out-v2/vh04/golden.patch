@@ -1,0 +1,5 @@
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -26 +26 @@
+-ENTRYPOINT ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000"]
++ENTRYPOINT ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

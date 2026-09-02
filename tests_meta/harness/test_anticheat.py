@@ -19,6 +19,8 @@ EXPECTED_RULES = {
     "structured_logging_intact", "ci_contract_intact", "merge_resolved_cleanly",
     # Improvement 2 benchmark-side addition (held-out h01/h03 port relationships)
     "service_ports_intact",
+    # v2 benchmark-side additions (held-out-v2)
+    "probe_contract_intact", "min_replicas", "frozen_paths_intact",
 }
 
 
@@ -34,10 +36,10 @@ def _edit(path, old, new):
 
 
 # --- registry shape --------------------------------------------------------
-def test_registry_has_exactly_ten_rules():
+def test_registry_has_exactly_thirteen_rules():
     assert set(_ANTICHEAT_RULES) == EXPECTED_RULES
     assert set(_RULE_ORDER) == EXPECTED_RULES
-    assert len(_RULE_ORDER) == 10  # deterministic order, no dupes
+    assert len(_RULE_ORDER) == 13  # deterministic order, no dupes
 
 
 def test_unknown_rule_is_rejected(base_tree):
@@ -94,6 +96,9 @@ _CLEAN_CFG = {
     "ci_contract_intact": True,
     "merge_resolved_cleanly": True,
     "service_ports_intact": True,
+    "probe_contract_intact": True,
+    "min_replicas": 1,
+    "frozen_paths_intact": ["charts"],
 }
 
 

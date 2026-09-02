@@ -18,6 +18,9 @@ EXPECTED = {
     "git_tree_resolved": 10,
     # Improvement 2 benchmark-side addition (held-out h01/h03 port relationships)
     "service_ports_wired": 15,
+    # v2 benchmark-side additions (held-out-v2 vh05 / vh06 relationships)
+    "pod_security_baseline": 15,
+    "workload_capacity": 15,
 }
 
 

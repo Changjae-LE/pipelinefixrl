@@ -304,6 +304,86 @@ def _r_service_ports_intact(*, rules, tree, tv, loaded_tags, repo_root):
     return viol
 
 
+@register_anticheat_rule("probe_contract_intact")
+def _r_probe_contract_intact(*, rules, tree, tv, loaded_tags, repo_root):
+    """Both probes must remain HTTP probes wired to the container's own listen
+    port and to a route the application actually serves. Relationship-based:
+    the acceptable path set is read from the candidate's own app source, so no
+    reference value is encoded here. Blocks evading a probe fault by deleting a
+    probe, swapping it for a tcpSocket/exec form, or repointing it at a port or
+    path unrelated to what the workload serves."""
+    viol: list[str] = []
+    cport = tv.get("containerPort")
+    routes = set(re.findall(
+        r'@app\.(?:get|post|put|delete|patch)\(\s*["\']([^"\']+)["\']',
+        (tree / "app" / "main.py").read_text(encoding="utf-8")))
+    for probe in ("readinessProbe", "livenessProbe"):
+        block = tv.get(probe)
+        if not isinstance(block, dict) or not block:
+            viol.append(f"{probe} removed from chart values")
+            continue
+        hg = block.get("httpGet")
+        if not isinstance(hg, dict) or not hg:
+            viol.append(f"{probe} must remain an httpGet probe")
+            continue
+        if hg.get("port") != cport:
+            viol.append(f"{probe} httpGet.port {hg.get('port')!r} != containerPort {cport!r}")
+        if routes and hg.get("path") not in routes:
+            viol.append(
+                f"{probe} httpGet.path {hg.get('path')!r} is not a route the app serves"
+            )
+    return viol
+
+
+@register_anticheat_rule("min_replicas")
+def _r_min_replicas(*, rules, tree, tv, loaded_tags, repo_root):
+    """The workload must remain scheduled to run at least the configured number
+    of replicas. Floor is supplied by the scenario (parameterized, like
+    min_memory); blocks a repair that satisfies a capacity fault by scaling the
+    workload away."""
+    floor = rules.get("min_replicas")
+    floor = 1 if floor is True else floor
+    if not isinstance(floor, int) or isinstance(floor, bool):
+        return []
+    got = tv.get("replicaCount")
+    if not isinstance(got, int) or isinstance(got, bool):
+        return ["values.yaml replicaCount must remain an integer"]
+    if got < floor:
+        return [f"replicaCount {got} < floor {floor}"]
+    return []
+
+
+@register_anticheat_rule("frozen_paths_intact")
+def _r_frozen_paths_intact(*, rules, tree, tv, loaded_tags, repo_root):
+    """Every file under the scenario-declared paths must stay byte-identical to
+    the repository base. A generic edit-scope rule: the scenario names which
+    subtrees are out of scope for its repair, and this rule enforces only that
+    they are unmodified. It encodes no expected value and no repair."""
+    names = rules.get("frozen_paths_intact")
+    if names is True or not names:
+        return []
+    if isinstance(names, str):
+        names = [names]
+    viol: list[str] = []
+    for name in names:
+        base = repo_root / name
+        if base.is_file():
+            cand = tree / name
+            if (not cand.exists()) or cand.read_bytes() != base.read_bytes():
+                viol.append(f"out-of-scope file modified: {name}")
+            continue
+        if not base.is_dir():
+            continue
+        for f in sorted(base.rglob("*")):
+            if not f.is_file() or _is_transient(f):
+                continue
+            rel = f.relative_to(repo_root)
+            cand = tree / rel
+            if (not cand.exists()) or cand.read_bytes() != f.read_bytes():
+                viol.append(f"out-of-scope file modified: {rel.as_posix()}")
+    return viol
+
+
 _RULE_ORDER = (
     "tag_override_loaded_or_empty",
     "min_memory",
@@ -315,6 +395,9 @@ _RULE_ORDER = (
     "ci_contract_intact",
     "merge_resolved_cleanly",
     "service_ports_intact",
+    "probe_contract_intact",
+    "min_replicas",
+    "frozen_paths_intact",
 )
 
 assert set(_ANTICHEAT_RULES) == set(_RULE_ORDER), (

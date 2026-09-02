@@ -14,7 +14,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 AGENT_FREEZE_COMMIT = "8ccbe0d62df1c336e2384d45486db52194630892"
-_FORBIDDEN = re.compile(r"\bh0[123]\b|held[-_ ]?out", re.IGNORECASE)
+_FORBIDDEN = re.compile(r"\bh0[123]\b|\bvh0[1-8]\b|held[-_ ]?out", re.IGNORECASE)
 
 
 def _agent_sources():

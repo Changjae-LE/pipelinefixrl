@@ -1,0 +1,59 @@
+# HELD-OUT v2 generalization scenario. Created AFTER the v2 agent freeze
+# commit 4d538b74f31e1a13291a61e6cee5744c516183c9; the frozen repair
+# implementation contains no reference to this scenario.
+# Novelty class: B - a GENUINELY NOVEL relationship: no frozen primitive reasons about
+# the port the application process actually binds. The chart is entirely
+# self-consistent, so no frozen diagnosis fires at all.
+id: vh04
+title: Application binds a port the deployment contract does not expect
+category: kubernetes/networking
+difficulty: hard
+description: >
+  docker/Dockerfile starts uvicorn on port 9000 while the chart's deployment
+  contract - containerPort, both probes and the Service targetPort - is 8000,
+  and the image still documents EXPOSE 8000. Every chart-side port relationship
+  is mutually consistent; what diverges is the port the process actually binds.
+  The readiness probe is refused, so the pod never becomes Ready.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-vh04
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 60
+  restart_threshold: 0
+
+  # The chart's published port contract is out of scope for this repair: the
+  # workload must serve the port the deployment contract declares. Declaring
+  # charts/ frozen keeps the repair contract single-valued without encoding
+  # any expected value.
+  anticheat:
+    frozen_paths_intact: [charts]
+
+  expect:
+    broken:
+      score_max: 10
+      must_pass: [helm_release_ok]
+      must_fail:
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      evidence:
+        events_contains:
+          - "Readiness probe failed"
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+      anticheat_clean: true

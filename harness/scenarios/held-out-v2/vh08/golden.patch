@@ -1,0 +1,14 @@
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -3 +2,0 @@
+-<<<<<<< HEAD
+@@ -6,4 +4,0 @@
+-=======
+-fastapi>=0.115,<1.0
+-uvicorn[standard]>=0.32,<1.0
+->>>>>>> origin/deps-bump
+--- a/charts/app/values.yaml
++++ b/charts/app/values.yaml
+@@ -18 +18 @@
+-  port: 8081
++  port: 80

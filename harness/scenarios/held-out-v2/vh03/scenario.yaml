@@ -1,0 +1,72 @@
+# HELD-OUT v2 generalization scenario. Created AFTER the v2 agent freeze
+# commit 4d538b74f31e1a13291a61e6cee5744c516183c9; the frozen repair
+# implementation contains no reference to this scenario.
+# Novelty class: A - a held-out INSTANCE of the frozen
+# runtime_constraints.security_context relationship, as a minimal
+# single-field regression rather than a gross posture failure.
+id: vh03
+title: Container keeps all Linux capabilities
+category: kubernetes/security
+difficulty: medium
+description: >
+  charts/app/values.yaml empties securityContext.capabilities.drop. Every other
+  hardening field stays correct, so the container still runs as a non-root user
+  on a read-only root filesystem with privilege escalation disabled - the
+  workload is entirely healthy and serves traffic. Only the dropped-capability
+  posture is gone.
+
+target:
+  chart: charts/app
+  namespace_prefix: pfrl-vh03
+
+patches:
+  break: break.patch
+  golden: golden.patch
+
+evaluation:
+  deploy_timeout_seconds: 45
+  restart_threshold: 0
+
+  checks: [runs_as_nonroot, readonly_rootfs, no_priv_escalation, caps_dropped]
+  weights:
+    rollout_complete: 10
+    deployment_ready: 10
+    pods_ready: 5
+    endpoints_present: 10
+    http_health_ok: 10
+    runs_as_nonroot: 15
+    readonly_rootfs: 10
+    no_priv_escalation: 10
+    caps_dropped: 10
+
+  anticheat:
+    security_posture_intact: true
+
+  expect:
+    broken:
+      score_max: 90
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - runs_as_nonroot
+        - readonly_rootfs
+        - no_priv_escalation
+      must_fail: [caps_dropped]
+    golden:
+      score_min: 100
+      must_pass:
+        - helm_release_ok
+        - rollout_complete
+        - deployment_ready
+        - pods_ready
+        - endpoints_present
+        - http_health_ok
+        - runs_as_nonroot
+        - readonly_rootfs
+        - no_priv_escalation
+        - caps_dropped
+      anticheat_clean: true

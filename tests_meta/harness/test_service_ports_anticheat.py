@@ -35,8 +35,11 @@ def _rule(tree, tv):
 
 def test_rule_is_registered_and_ordered():
     assert "service_ports_intact" in _ANTICHEAT_RULES
-    assert _RULE_ORDER[-1] == "service_ports_intact"
+    # ordered after every rule that predates it (position, not last-place: later
+    # benchmark work appends further rules)
+    assert _RULE_ORDER.index("service_ports_intact") > _RULE_ORDER.index("merge_resolved_cleanly")
     assert set(_ANTICHEAT_RULES) == set(_RULE_ORDER)
+    assert len(set(_RULE_ORDER)) == len(_RULE_ORDER)
 
 
 def test_honest_base_wiring_is_clean(tmp_path):
