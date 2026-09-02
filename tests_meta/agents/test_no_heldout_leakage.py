@@ -23,7 +23,7 @@ def _agent_sources():
 
 def test_agent_sources_exist():
     names = {p.name for p in _agent_sources()}
-    assert {"fix_agent.py", "primitives.py"} <= names
+    assert {"fix_agent.py", "primitives.py", "contracts.py"} <= names
 
 
 def test_no_held_out_ids_or_terms_in_frozen_agent_code():
@@ -47,11 +47,19 @@ def test_no_scenario_id_to_answer_mapping_beyond_baseline_table():
     assert not re.search(r"scenario_id\s*==\s*['\"]", derive)
 
 
+# v1's working-tree freeze pin retired when v2 development began (v2 modifies
+# agent code by design). The historical guarantee is asserted instead: no
+# commit in the v1 evaluation window (freeze -> v1 final) touched agent code.
+V1_FINAL_COMMIT = "bd24458ca9c856735f9d776fa5e54eb9f2d91985"
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
-def test_agents_tree_matches_the_freeze_commit():
+def test_v1_freeze_history_is_intact():
     cp = subprocess.run(
-        ["git", "diff", AGENT_FREEZE_COMMIT, "--", "harness/agents"],
+        ["git", "log", "--oneline",
+         f"{AGENT_FREEZE_COMMIT}..{V1_FINAL_COMMIT}", "--", "harness/agents"],
         cwd=REPO, capture_output=True, text=True)
     assert cp.returncode == 0, cp.stderr
     assert cp.stdout.strip() == "", (
-        "harness/agents/** differs from the agent freeze commit:\n" + cp.stdout[:2000])
+        "a commit between the v1 agent freeze and the v1 final commit touched "
+        "harness/agents/**:\n" + cp.stdout[:2000])

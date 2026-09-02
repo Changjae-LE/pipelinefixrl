@@ -24,6 +24,8 @@ import re
 
 import yaml
 
+from harness.agents import contracts
+
 # ---------------------------------------------------------------------------
 # shared low-level helpers (also used by the baseline tier)
 # ---------------------------------------------------------------------------
@@ -569,8 +571,40 @@ def p_config_contract(tree, ev):
     return out
 
 
+# ---------------------------------------------------------------------------
+# P: consumer contract — a consumer failure that names the endpoint it
+#    expected is first-class evidence of the published contract (v2)
+# ---------------------------------------------------------------------------
+def p_consumer_contract(tree, ev):
+    """Reconcile tree endpoint declarations against consumer-side expectations
+    extracted from the run's own evidence (harness.agents.contracts). All
+    repair decisions live in the deterministic reconciliation layer: ambiguous
+    / insufficient / conflicting evidence and tree-corroborated values produce
+    no change."""
+    out = []
+    for r in contracts.diagnose(tree, ev):
+        if (r.kind, r.attribute) == ("Service", "port"):
+            vp = tree / "charts" / "app" / "values.yaml"
+            lines, sect = [], None
+            for ln in vp.read_text(encoding="utf-8").splitlines(keepends=True):
+                if ln and not ln[0].isspace():
+                    sect = ln.split(":", 1)[0].strip()
+                elif sect == "service" and ln.strip().startswith("port:"):
+                    ln = ln[: ln.index("port:")] + f"port: {r.expected}\n"
+                lines.append(ln)
+            out.append(_f(
+                "consumer_contract", "published_contract",
+                f"{r.evidence_source} expects {r.kind}.{r.attribute} = "
+                f"{r.expected}; the tree declares {r.current} "
+                f"({r.decl_source}) with no tree-side corroboration — "
+                "reconciled the declaration to the consumed contract",
+                [("charts/app/values.yaml", "".join(lines).encode("utf-8"))]))
+    return out
+
+
 # fixed deterministic order: build-blocking integrity first, then chart wiring,
-# HTTP contract, service wiring, runtime constraints, config contract.
+# HTTP contract, service wiring, runtime constraints, config contract, and
+# finally consumer-contract reconciliation (evidence-derived expectations).
 PRIMITIVES = [
     p_source_integrity,
     p_chart_value_wiring,
@@ -578,6 +612,7 @@ PRIMITIVES = [
     p_service_wiring,
     p_runtime_constraints,
     p_config_contract,
+    p_consumer_contract,
 ]
 
 

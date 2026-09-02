@@ -14,6 +14,7 @@ import pathlib
 import token
 import tokenize
 
+import harness.agents.contracts as contracts
 import harness.agents.fix_agent as fa
 import harness.agents.primitives as prims
 
@@ -32,6 +33,11 @@ def _code_tokens(source):
 # --- static -------------------------------------------------------------
 def test_primitives_module_code_has_no_golden_reference():
     src = pathlib.Path(prims.__file__).read_text(encoding="utf-8")
+    assert "golden" not in _code_tokens(src).lower()
+
+
+def test_contracts_module_code_has_no_golden_reference():
+    src = pathlib.Path(contracts.__file__).read_text(encoding="utf-8")
     assert "golden" not in _code_tokens(src).lower()
 
 
