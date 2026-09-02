@@ -1,0 +1,336 @@
+{
+  "artifact": "official held-out generalization first-shot result",
+  "suite": "v2",
+  "agent_freeze_commit": "4d538b74f31e1a13291a61e6cee5744c516183c9",
+  "benchmark_commit": "ea980e319ed3b4ab3dc48934d7406cdc4da8e474",
+  "official_first_shot": true,
+  "protocol": "per scenario: broken (contract enforced) -> frozen advanced with allow_golden_fallback=False under an active golden-access guard -> archived before any held-out golden run; golden fallback can never count as generalization success",
+  "generated_utc": "2026-09-02T17:47:53Z",
+  "scenarios": [
+    {
+      "scenario": "vh01",
+      "novelty": "A",
+      "broken": 85,
+      "first_derived_score": 100,
+      "final_derived_score": 100,
+      "derived_rounds_attempted": 1,
+      "derived_rounds": [
+        {
+          "round": 1,
+          "evidence_sources": [
+            "events.txt",
+            "events.json",
+            "pods.json",
+            "logs/",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "http_contract",
+              "diagnosis": "probe_port",
+              "file": "charts/app/values.yaml"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "http_contract.probe_port: probe port [9000] is not the container's listen port 8000; aligned the probe to containerPort",
+          "files_modified": [
+            "charts/app/values.yaml"
+          ],
+          "validation_score": 100,
+          "validation_passed": true
+        }
+      ],
+      "repair_mode": "derived",
+      "fallback_used": false,
+      "final_score": 100,
+      "files_modified": [
+        "charts/app/values.yaml"
+      ],
+      "rationale": "http_contract.probe_port: probe port [9000] is not the container's listen port 8000; aligned the probe to containerPort",
+      "derived_success": true,
+      "scenario_hashes": {
+        "scenario.yaml": "abae4d25a7f3c01e28c0b7eff6b92733fe533c4e8dc63954736833db600b31de",
+        "break.patch": "3285fa205797ab83032cc11d36e2b14b78ef1611c731bb6a0820fba1a3141387",
+        "golden.patch": "c36cf5277c67f671f6b06a592dc5b32010041728c4ad96c57f00a2f70994a932"
+      }
+    },
+    {
+      "scenario": "vh02",
+      "novelty": "A",
+      "broken": 10,
+      "first_derived_score": 100,
+      "final_derived_score": 100,
+      "derived_rounds_attempted": 1,
+      "derived_rounds": [
+        {
+          "round": 1,
+          "evidence_sources": [
+            "events.txt",
+            "events.json",
+            "pods.json",
+            "logs/",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "chart_value_wiring",
+              "diagnosis": "template_image_ref",
+              "file": "charts/app/templates/deployment.yaml"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "chart_value_wiring.template_image_ref: deployment image ref uses undefined value key(s) ['pullPolicy', 'repository']; rebuilt it from .Values.image.repository + .Values.image.tag with a required guard",
+          "files_modified": [
+            "charts/app/templates/deployment.yaml"
+          ],
+          "validation_score": 100,
+          "validation_passed": true
+        }
+      ],
+      "repair_mode": "derived",
+      "fallback_used": false,
+      "final_score": 100,
+      "files_modified": [
+        "charts/app/templates/deployment.yaml"
+      ],
+      "rationale": "chart_value_wiring.template_image_ref: deployment image ref uses undefined value key(s) ['pullPolicy', 'repository']; rebuilt it from .Values.image.repository + .Values.image.tag with a required guard",
+      "derived_success": true,
+      "scenario_hashes": {
+        "scenario.yaml": "40c734e487bcf82cd9da0ea4a9d2f51711304e03c107a3af15c38a77a20777bd",
+        "break.patch": "08f8690e27efd9a79a8fd11ee46291b19de6e7e12423339a8aae70f8b47a5dc1",
+        "golden.patch": "765d3cfc81095a44392875e6806ea42cf3c378cfee4b1dfe9728591b06a00dd7"
+      }
+    },
+    {
+      "scenario": "vh03",
+      "novelty": "A",
+      "broken": 90,
+      "first_derived_score": 100,
+      "final_derived_score": 100,
+      "derived_rounds_attempted": 1,
+      "derived_rounds": [
+        {
+          "round": 1,
+          "evidence_sources": [
+            "events.txt",
+            "events.json",
+            "pods.json",
+            "logs/",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "runtime_constraints",
+              "diagnosis": "security_context",
+              "file": "charts/app/values.yaml"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "runtime_constraints.security_context: container securityContext is not hardened; applied the standard hardened posture (non-root uid 1000, RO rootfs, no priv-esc, drop ALL caps)",
+          "files_modified": [
+            "charts/app/values.yaml"
+          ],
+          "validation_score": 100,
+          "validation_passed": true
+        }
+      ],
+      "repair_mode": "derived",
+      "fallback_used": false,
+      "final_score": 100,
+      "files_modified": [
+        "charts/app/values.yaml"
+      ],
+      "rationale": "runtime_constraints.security_context: container securityContext is not hardened; applied the standard hardened posture (non-root uid 1000, RO rootfs, no priv-esc, drop ALL caps)",
+      "derived_success": true,
+      "scenario_hashes": {
+        "scenario.yaml": "b3fe9928059e957d97e67a6748d314e2ab88ab444d5a1d674385724488c2ccc7",
+        "break.patch": "07fa68dc02aeed1cfcb5ce30ba59b6dc3c43612f5fa6940525f644d7fb262eb0",
+        "golden.patch": "fe58bb692d9526d0f242bd666f6e50b3e24e2f136b39d5d5fab12408cee8ff8e"
+      }
+    },
+    {
+      "scenario": "vh04",
+      "novelty": "B",
+      "broken": 10,
+      "first_derived_score": null,
+      "final_derived_score": null,
+      "derived_rounds_attempted": 0,
+      "derived_rounds": [],
+      "repair_mode": "no_change",
+      "fallback_used": false,
+      "final_score": 10,
+      "files_modified": [],
+      "rationale": "no repair primitive matched the broken tree / evidence",
+      "derived_success": false,
+      "scenario_hashes": {
+        "scenario.yaml": "0813c35f4bff5307bff484fb0555c02d6a901d29cd8e25c95b4b317ee70f769f",
+        "break.patch": "99388d140c04276b9173c9d8e08487560b331f81a6502810cd7641cd02f24869",
+        "golden.patch": "2aeb613963b0e850b2c5d547cb66965ee2be100081dfdef570b8d328c9ff2ad1"
+      }
+    },
+    {
+      "scenario": "vh05",
+      "novelty": "B",
+      "broken": 85,
+      "first_derived_score": null,
+      "final_derived_score": null,
+      "derived_rounds_attempted": 0,
+      "derived_rounds": [],
+      "repair_mode": "no_change",
+      "fallback_used": false,
+      "final_score": 85,
+      "files_modified": [],
+      "rationale": "no repair primitive matched the broken tree / evidence",
+      "derived_success": false,
+      "scenario_hashes": {
+        "scenario.yaml": "531905282656ec085bfe99cd4921776db54e6aeed4f293e4253a5bafa1c652a0",
+        "break.patch": "3f7246f989ab26eafd1751a132d592d9e0af5963128789e2f96d9c0aacaccdb4",
+        "golden.patch": "a03a49de7080f8ed50ce0ce10a7cf5cbbc4bfdd78e67a0404664602e5d9d41f7"
+      }
+    },
+    {
+      "scenario": "vh06",
+      "novelty": "B",
+      "broken": 40,
+      "first_derived_score": null,
+      "final_derived_score": null,
+      "derived_rounds_attempted": 0,
+      "derived_rounds": [],
+      "repair_mode": "no_change",
+      "fallback_used": false,
+      "final_score": 40,
+      "files_modified": [],
+      "rationale": "no repair primitive matched the broken tree / evidence",
+      "derived_success": false,
+      "scenario_hashes": {
+        "scenario.yaml": "2a53ca2641a17cb172540201bcafd690fe38eafaa516a594dcdec4d00a2d04d9",
+        "break.patch": "b7c89ad3c40f9088b1a71ec0da08327e42c46257a79c50b3f162208d2e49d216",
+        "golden.patch": "4515678c8b98cc9a95e44cc3972702d04598af9aa61432cfb0ae9d162c35e27d"
+      }
+    },
+    {
+      "scenario": "vh07",
+      "novelty": "COMPOUND",
+      "broken": 45,
+      "first_derived_score": 100,
+      "final_derived_score": 100,
+      "derived_rounds_attempted": 1,
+      "derived_rounds": [
+        {
+          "round": 1,
+          "evidence_sources": [
+            "events.txt",
+            "events.json",
+            "pods.json",
+            "logs/",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "http_contract",
+              "diagnosis": "probe_path",
+              "file": "charts/app/values.yaml"
+            },
+            {
+              "primitive": "runtime_constraints",
+              "diagnosis": "security_context",
+              "file": "charts/app/values.yaml"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "http_contract.probe_path: probe path ['/ready'] is not a route the app serves ['/', '/health']; repointed to /health; runtime_constraints.security_context: container securityContext is not hardened; applied the standard hardened posture (non-root uid 1000, RO rootfs, no priv-esc, drop ALL caps)",
+          "files_modified": [
+            "charts/app/values.yaml"
+          ],
+          "validation_score": 100,
+          "validation_passed": true
+        }
+      ],
+      "repair_mode": "derived",
+      "fallback_used": false,
+      "final_score": 100,
+      "files_modified": [
+        "charts/app/values.yaml"
+      ],
+      "rationale": "http_contract.probe_path: probe path ['/ready'] is not a route the app serves ['/', '/health']; repointed to /health; runtime_constraints.security_context: container securityContext is not hardened; applied the standard hardened posture (non-root uid 1000, RO rootfs, no priv-esc, drop ALL caps)",
+      "derived_success": true,
+      "scenario_hashes": {
+        "scenario.yaml": "cb92a6a64f8ee7be08e42ee6eb83a5d44c8625e615c95c9a8f5ecbdee20b6a9f",
+        "break.patch": "adfc8610bf3eabe424e3f7bfe4724282040319d0ee9af32e073a1685778c32b5",
+        "golden.patch": "2da8e79f193af3e5b51c9ac98ec990480f3342539afc760940e36414e3d5c992"
+      }
+    },
+    {
+      "scenario": "vh08",
+      "novelty": "COMPOUND",
+      "broken": 0,
+      "first_derived_score": 75,
+      "final_derived_score": 100,
+      "derived_rounds_attempted": 2,
+      "derived_rounds": [
+        {
+          "round": 1,
+          "evidence_sources": [
+            "build.log",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "source_integrity",
+              "diagnosis": "conflict",
+              "file": "requirements.txt"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "source_integrity.conflict: unresolved merge conflict \u2014 resolved every hunk to its HEAD side",
+          "files_modified": [
+            "requirements.txt"
+          ],
+          "validation_score": 75,
+          "validation_passed": false
+        },
+        {
+          "round": 2,
+          "evidence_sources": [
+            "events.txt",
+            "events.json",
+            "pods.json",
+            "logs/",
+            "checks.json"
+          ],
+          "findings": [
+            {
+              "primitive": "consumer_contract",
+              "diagnosis": "published_contract",
+              "file": "charts/app/values.yaml"
+            }
+          ],
+          "edit_conflicts": [],
+          "rationale": "consumer_contract.published_contract: consumer evidence 'Service app does not have a service port 80' expects Service.port = 80; the tree declares 8081 (charts/app/values.yaml:service.port) with no tree-side corroboration \u2014 reconciled the declaration to the consumed contract",
+          "files_modified": [
+            "charts/app/values.yaml",
+            "requirements.txt"
+          ],
+          "validation_score": 100,
+          "validation_passed": true
+        }
+      ],
+      "repair_mode": "derived",
+      "fallback_used": false,
+      "final_score": 100,
+      "files_modified": [
+        "charts/app/values.yaml",
+        "requirements.txt"
+      ],
+      "rationale": "consumer_contract.published_contract: consumer evidence 'Service app does not have a service port 80' expects Service.port = 80; the tree declares 8081 (charts/app/values.yaml:service.port) with no tree-side corroboration \u2014 reconciled the declaration to the consumed contract",
+      "derived_success": true,
+      "scenario_hashes": {
+        "scenario.yaml": "0d777b023ee31c6b8b40aa58283ba27e38ce14b33f033c15be1aa776e9c13a50",
+        "break.patch": "0ffe7bd70396a8450f94a93c5274ac665333e37b6663b17ac669eb1a10761b50",
+        "golden.patch": "8171159a49f4a094ba6f1b3fa4e903492ed0783be57db5d6f3139d602fdcdd23"
+      }
+    }
+  ],
+  "generalization_success": "5/8 derived",
+  "generalization_rate": 0.625
+}

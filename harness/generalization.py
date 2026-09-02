@@ -39,6 +39,24 @@ NOVELTY = {"h01": "A", "h02": "A", "h03": "B"}
 AGENTS_STATE = REPO_ROOT / ".state" / "agents"
 EVIDENCE_PATH = REPO_ROOT / "docs" / "evidence" / "generalization-first-shot.json"
 
+# --- v2 held-out suite (locked benchmark, authored after the v2 agent freeze)
+V2_AGENT_FREEZE_COMMIT = "4d538b74f31e1a13291a61e6cee5744c516183c9"
+HELD_OUT_V2_IDS = [f"vh0{i}" for i in range(1, 9)]
+NOVELTY_V2 = {
+    "vh01": "A", "vh02": "A", "vh03": "A",
+    "vh04": "B", "vh05": "B", "vh06": "B",
+    "vh07": "COMPOUND", "vh08": "COMPOUND",
+}
+EVIDENCE_PATH_V2 = REPO_ROOT / "docs" / "evidence" / "generalization-first-shot-v2.json"
+
+SUITES = {
+    "v1": {"ids": HELD_OUT_IDS, "novelty": NOVELTY, "freeze": AGENT_FREEZE_COMMIT,
+           "artifact": EVIDENCE_PATH, "scratch": "generalization.json"},
+    "v2": {"ids": HELD_OUT_V2_IDS, "novelty": NOVELTY_V2,
+           "freeze": V2_AGENT_FREEZE_COMMIT, "artifact": EVIDENCE_PATH_V2,
+           "scratch": "generalization-v2.json"},
+}
+
 
 @contextlib.contextmanager
 def golden_access_guard():
@@ -86,13 +104,14 @@ def golden_access_guard():
         builtins.open = real_open
 
 
-def _select(only=None):
+def _select(only=None, suite="v1"):
+    valid = SUITES[suite]["ids"]
     if not only:
-        return list(HELD_OUT_IDS)
+        return list(valid)
     ids = [s.strip() for s in (only.split(",") if isinstance(only, str) else only) if s.strip()]
-    unknown = sorted(set(ids) - set(HELD_OUT_IDS))
+    unknown = sorted(set(ids) - set(valid))
     if unknown:
-        raise ValueError(f"unknown held-out id(s): {unknown} (valid: {HELD_OUT_IDS})")
+        raise ValueError(f"unknown held-out id(s): {unknown} (valid: {valid})")
     return ids
 
 
@@ -111,14 +130,14 @@ def scenario_hashes(sid: str) -> dict:
     }
 
 
-def row_from_provenance(sid: str, broken_score, prov: dict) -> dict:
+def row_from_provenance(sid: str, broken_score, prov: dict, suite="v1") -> dict:
     derived_success = bool(
         prov.get("repair_mode") == "derived" and prov.get("final_score") == 100
         and prov.get("fallback_used") is False
     )
     return {
         "scenario": sid,
-        "novelty": NOVELTY.get(sid),
+        "novelty": SUITES[suite]["novelty"].get(sid),
         "broken": broken_score,
         "first_derived_score": prov.get("first_derived_score"),
         "final_derived_score": prov.get("final_derived_score"),
@@ -133,12 +152,12 @@ def row_from_provenance(sid: str, broken_score, prov: dict) -> dict:
     }
 
 
-def run_first_shot(only=None):
+def run_first_shot(only=None, suite="v1"):
     """Broken contract, then the frozen agent with the fallback disabled and
     the golden-access guard armed. NO golden variant runs here."""
     from harness.agents import fix_agent  # frozen implementation — imported only
 
-    ids = _select(only)
+    ids = _select(only, suite)
     rows = []
     for sid in ids:
         print(f"\n=== generalization {sid}: broken contract ===")
@@ -160,32 +179,35 @@ def run_first_shot(only=None):
             scenmod.cleanup_scenario_ns(sid, "advanced")
         except Exception as exc:  # noqa: BLE001 — cleanup must not mask results
             print(f"  [generalization] cleanup skipped: {exc}")
-        rows.append(row_from_provenance(sid, broken_score, prov))
+        rows.append(row_from_provenance(sid, broken_score, prov, suite))
 
     AGENTS_STATE.mkdir(parents=True, exist_ok=True)
-    (AGENTS_STATE / "generalization.json").write_text(
+    (AGENTS_STATE / SUITES[suite]["scratch"]).write_text(
         json.dumps(rows, indent=2), encoding="utf-8")
     print_matrix(rows)
     return rows
 
 
-def golden_validate(only=None):
+def golden_validate(only=None, suite="v1"):
     """Post-archive step: each held-out golden must score 100 with anti-cheat
     clean, plus the compose round-trip. Run ONLY after the first-shot result
     has been archived."""
-    for sid in _select(only):
+    for sid in _select(only, suite):
         scenmod.run_scenario(sid, "golden", enforce=True)
         scenmod.cleanup_scenario_ns(sid, "golden")
         scenmod.compose_check(sid)
     print("held-out golden validation: PASS")
 
 
-def build_first_shot_artifact(rows) -> dict:
+def build_first_shot_artifact(rows, suite="v1", benchmark_commit=None) -> dict:
     n = len(rows)
     succ = sum(1 for r in rows if r["derived_success"])
     return {
         "artifact": "official held-out generalization first-shot result",
-        "agent_freeze_commit": AGENT_FREEZE_COMMIT,
+        "suite": suite,
+        "agent_freeze_commit": SUITES[suite]["freeze"],
+        "benchmark_commit": benchmark_commit,
+        "official_first_shot": True,
         "protocol": (
             "per scenario: broken (contract enforced) -> frozen advanced with "
             "allow_golden_fallback=False under an active golden-access guard -> "
@@ -201,17 +223,17 @@ def build_first_shot_artifact(rows) -> dict:
     }
 
 
-def write_first_shot_artifact(rows, out_path=None):
+def write_first_shot_artifact(rows, out_path=None, suite="v1", benchmark_commit=None):
     """Write the tracked official evidence artifact. Must be produced from
     exactly one official first-shot run and never regenerated to improve the
     reported number."""
-    out = pathlib.Path(out_path) if out_path else EVIDENCE_PATH
+    out = pathlib.Path(out_path) if out_path else SUITES[suite]["artifact"]
     if out.exists():
         raise SystemExit(
             f"REFUSED: official first-shot artifact already exists at {out} — "
             "it must come from exactly one official run and is never overwritten")
     out.parent.mkdir(parents=True, exist_ok=True)
-    art = build_first_shot_artifact(rows)
+    art = build_first_shot_artifact(rows, suite, benchmark_commit)
     out.write_text(json.dumps(art, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"first-shot evidence artifact written: {out}")
     return out
