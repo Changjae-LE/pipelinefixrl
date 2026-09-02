@@ -41,7 +41,36 @@ harness.scenario        _evidence_scan · _check_expect ─► verdict.json / ch
 | `harness/checks/build.py` | `image_pull_ok`, `no_oomkill`, `image_build_ok`, `git_tree_resolved` |
 | `harness/evaluate.py` | orchestration only: `evaluate()` (backbone + activated scenario checks + weight re-balance + score + `checks.json`), `is_healthy()`, and back-compat re-exports so `harness.evaluate` stays a stable import point |
 | `harness/scenario.py` | `run_scenario()` orchestration, `_finish_build_failure` (the "image never built" path), `_evidence_scan`, `_check_expect`, `compose_check`, `cleanup_scenario_ns` |
-| `harness/agents/fix_agent.py` | `baseline` (offline heuristic) + `advanced` (deriving fixer, golden replay only as an explicit provenance-recorded fallback); `harness agent` / `harness agent-matrix` |
+| `harness/agents/primitives.py` | the advanced agent's repair layer: **Evidence** (typed workload-state signals parsed from a run's own artifacts — events/pods/logs/build/CI + failed-check reasons), the **Finding** model (primitive · diagnosis · rationale · edits), six relationship **primitives** (source integrity, chart value wiring, HTTP contract incl. probe port, Service wiring incl. targetPort↔containerPort, runtime constraints incl. Unschedulable clamp, config contract), and the deterministic **composition engine** (fixed order, edits composed against current candidate bytes, duplicates collapsed, same-region conflicts recorded + skipped) |
+| `harness/agents/fix_agent.py` | `baseline` (offline heuristic) + `advanced`: the iterative **derive → apply → validate → observe → refine** loop over the primitives (`MAX_DERIVED_ROUNDS = 3`, per-round provenance incl. `first_derived_score` vs `final_derived_score`); the explicit golden replay runs only after all derived rounds are exhausted **and** only when `allow_golden_fallback=True` — that flag is the fallback boundary the generalization benchmark disables; `harness agent` / `harness agent-matrix` |
+| `harness/generalization.py` | held-out first-shot evaluation (benchmark side): runs the **frozen** agent (`AGENT_FREEZE_COMMIT`) with the fallback disabled under a **golden-access guard** (any Python-side read of a `golden` path raises), archives the create-once evidence artifact, then post-archive golden validation; `harness agent-generalization` / `make generalization` |
+
+## Advanced-agent repair loop
+
+```
+broken run artifacts ──► Evidence (typed signals + failed-check reasons)
+        │
+        ▼                       round 1..MAX_DERIVED_ROUNDS(3)
+candidate tree ─► primitives (fixed order) ─► Findings ─► deterministic compose
+        │            (duplicates collapsed; same-region conflicts recorded+skipped)
+        ▼
+patch vs broken tree ─► run as `advanced` ─► validate: SCORE 100 + anti-cheat
+        │                                     clean + expectation
+        ├─ pass ──► repair_mode=derived  (fallback_used=false)
+        └─ fail ──► observe THIS run's evidence ─► refine (next round)
+                         │ (rounds exhausted)
+                         ├─ allow_golden_fallback=True  ─► explicit golden replay
+                         │                                 (repair_mode=golden_fallback)
+                         └─ False (generalization mode) ─► failed / no_change
+```
+
+Every round is recorded in `advanced_provenance.json` (evidence sources,
+findings, edit conflicts, rationale, files, validation score/passed); the
+derivation path never reads golden material — enforced by static tokenize
+scans, runtime path-poisoning tests, and the generalization runner's guard.
+**Frozen-agent boundary:** since the freeze commit `8ccbe0d…`,
+`harness/agents/**` is byte-identical to that commit (held-out work lives
+entirely on the evaluation side); see `docs/GENERALIZATION.md`.
 
 ## Extending
 
@@ -64,7 +93,8 @@ task.md, break.patch, golden.patch, plus any check / anti-cheat rule).
 | command | what | needs |
 |---|---|---|
 | `make quick` | `lint` (helm) + `lint-py` (ruff) + `test-fast` (pytest) + `compose-all` | nothing beyond the venv + helm |
-| `make test-fast` | `tests/` (app) + `tests_meta/` (harness/agent meta suite) — ~150 fast unit tests, no Docker/kind/K8s/network/`patch` | venv |
+| `make test-fast` | `tests/` (app) + `tests_meta/` (harness/agent meta suite) — ~230 fast unit tests, no Docker/kind/K8s/network/`patch` | venv |
+| `make generalization` | held-out first-shot: frozen advanced agent, golden fallback disabled, golden-access guard (`docs/GENERALIZATION.md`) | Docker + kind |
 | `make lint-py` | `ruff check harness app tests tests_meta` (`F`/`B`/`UP`) | venv |
 | `.github/workflows/ci.yml` | ruff + fast tests + `helm lint` + `docker build`, on every push/PR | — |
 | `.github/workflows/e2e.yml` | `make e2e-base` + `scenario-001..010` + `agents-matrix`, `workflow_dispatch` only | GitHub runner |

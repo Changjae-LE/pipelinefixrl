@@ -37,6 +37,18 @@ the micro1 Agentic Workflows Hackathon.
   behavior preserved (Phase 4 fresh-baseline compare: 0 graded-field
   differences). Module layout: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
   On `continued-development`.
+- **Improvement 2 — Agent generalization + held-out first-shot benchmark** —
+  the advanced agent was rebuilt from 10 scenario-shaped detectors into 6
+  composable relationship **primitives** with an iterative
+  derive→validate→refine loop, then **frozen** (commit `8ccbe0d`) *before*
+  three held-out scenarios were authored. Official first-shot (fallback
+  disabled, golden-access guarded): **2/3 derived** — Type A 2/2 (held-out
+  *instances* of relationships the frozen primitives already represent),
+  **Type B 0/1** (a genuinely novel relationship; the failure is preserved,
+  not tuned away). Separate from the development benchmark's 10/10.
+  Methodology + honest results: [`docs/GENERALIZATION.md`](docs/GENERALIZATION.md);
+  evidence: [`docs/evidence/generalization-first-shot.json`](docs/evidence/generalization-first-shot.json).
+  On `continued-development`.
 
 ## Prerequisites
 
@@ -87,21 +99,46 @@ unified diff, and the unchanged harness builds / deploys / scores it as a
 | Tier | Inputs it may use | How it repairs |
 |---|---|---|
 | **baseline** | the broken scenario tree only | offline, deterministic, **no-LLM heuristic**. A small literal-substitution table (probe path, image override, memory floor, ConfigMap key, log format, `/health` body) plus a mechanical merge-conflict resolver. No route parsing, no runtime evidence, no cross-file correlation — so 004 / 005 / 006 are out of reach, a deliberate, visible capability boundary. |
-| **advanced** | the broken tree's **own source files** + the **collected runtime evidence** of a broken run (`events` / `pods.json` / `logs/` / `build.log` / `ci.log`) + validation feedback from its own attempt | a **deriving fixer**. `_derive_repair` runs 10 fault-class detectors — probe path vs the routes the app actually serves, an image override that isn't on the node, OOMKilled + a memory floor, an undefined `.Values.image.*` key in the template, a hard-coded Service selector that diverged from the shared helper, an un-hardened `securityContext`, a `configMapKeyRef` key the ConfigMap doesn't define, a non-structured `logFormat`, a `/health` body that disagrees with the health test's asserted contract, and unresolved conflict markers — and constructs the repair from that evidence. It **never reads `golden.patch`, the golden variant, or any expected-repaired-file content** on the derivation path. |
+| **advanced** | the broken tree's **own source files** + the **collected runtime evidence** of its own runs (`events` / `pods.json` / `logs/` / `build.log` / `ci.log` / failed-check reasons) + validation feedback from its own attempts | a **deriving fixer** built from 6 composable relationship **primitives** (`harness/agents/primitives.py`): source integrity (conflict markers), chart value wiring (template refs vs defined values, stale image pins), HTTP contract (probe path *and port* vs what the app serves, `/health` body vs the tree's own test contract), Service wiring (selector vs the shared helper *and* targetPort vs containerPort), runtime constraints (OOM floors, Unschedulable clamp, hardened `securityContext`), config contract (`configMapKeyRef` keys, supported config modes). Each primitive diagnoses a reusable relationship — none contains scenario-shaped branches. Findings are composed deterministically (fixed order, duplicates collapsed, same-region conflicts recorded and skipped), then refined over an iterative **derive → apply → validate → observe → refine** loop (max 3 rounds, every round recorded in provenance). It **never reads `golden.patch`, the golden variant, or any expected-repaired-file content** on the derivation path. |
 
 ### Derived vs. fallback (advanced)
 
-Execution order is strict: **derive → run as `advanced` → validate (SCORE 100 +
-anti-cheat clean) → only if that fails, explicitly replay `golden.patch` as a
-fallback**. Every advanced result records provenance to
-`advanced_provenance.json` and the eval matrix:
+Execution order is strict: **derive → apply → validate (SCORE 100 + anti-cheat
+clean + expectation) → observe the failed run's own evidence → refine — up to
+`MAX_DERIVED_ROUNDS = 3` — and only after every derived round is exhausted,
+explicitly replay `golden.patch` as a fallback** (and only when
+`allow_golden_fallback=True`; the generalization benchmark disables it, so a
+fallback score can never masquerade as a repair there). Every advanced result
+records provenance to `advanced_provenance.json` and the eval matrix:
 
 `repair_mode` (`derived` | `golden_fallback` | `no_change` | `failed`),
 `derived_attempted`, `derived_validation_passed`, `fallback_used`,
-`final_score`, `files_modified`.
+`final_score`, `files_modified` — plus the iterative extension:
+`derived_rounds_attempted`, per-round `derived_rounds` (evidence sources,
+findings, edit conflicts, rationale, validation score/passed),
+`first_derived_score` vs `final_derived_score`, `allow_golden_fallback`.
 
 A `golden_fallback` SCORE 100 is **not** a derived-agent success and is reported
 distinctly everywhere.
+
+### Held-out generalization (first-shot, frozen agent)
+
+Because 10/10 on the scenarios the agent was developed against proves recall,
+not generalization, the agent was **frozen** at commit `8ccbe0d` and three
+held-out scenarios were authored only afterwards. Official first-shot (golden
+fallback disabled, golden-access guard armed, archived before any golden run):
+
+| held-out | fault relationship | novelty | first-shot |
+|---|---|---|---|
+| h01 | Service `targetPort` ≠ containerPort | **A** — held-out *instance* of a relationship the frozen primitives already represent | **100 derived** (round 1) |
+| h02 | Unschedulable 64Gi resource request | **A** — same caveat | **100 derived** (round 1) |
+| h03 | published Service-port contract broken | **B** — genuinely novel relationship, no dedicated frozen repair branch | **65 `no_change`** — honest failure, intentionally not tuned away |
+
+**held-out generalization: 2/3 derived · Type A 2/2 · Type B 0/1 ·
+golden_fallback 0.** h03 exposes a real capability boundary of the frozen
+primitives. Full methodology, leakage controls, and limitations:
+[`docs/GENERALIZATION.md`](docs/GENERALIZATION.md); immutable evidence:
+[`docs/evidence/generalization-first-shot.json`](docs/evidence/generalization-first-shot.json).
 
 ### Commands
 
@@ -115,6 +152,9 @@ make agents-matrix                        # broken/golden/baseline/advanced x 00
 # or drive the harness directly:
 .venv/Scripts/python -m harness agent --id scenario-004 --tier advanced   # prints its provenance
 .venv/Scripts/python -m harness agent-matrix
+
+make generalization                       # held-out first-shot (frozen agent, fallback disabled)
+.venv/Scripts/python -m harness agent-generalization --only h01,h03
 
 make kind-down
 ```
@@ -194,8 +234,10 @@ prior scenario **before** commit (evidence: `docs/PLAN.md` §11.8):
 | **M11** | `eda6087` `af83069` | scenario-010 — unresolved merge conflict; `image_build_ok` + `git_tree_resolved` checks; `_finish_build_failure` completed per §11.4 + `merge_resolved_cleanly` anti-cheat | broken ×2 =0 / golden 100 / compose; +A1–A14, s001–010 |
 | agents (v2) | `4a4bc3e` | advanced becomes a **deriving fixer** (10 fault-class detectors, scenario-visible evidence only, golden replay only as explicit provenance-recorded fallback); baseline broadened to 7/10; `harness agent-matrix` + `make agents-matrix` | matrix: **advanced 10/10 derived**, baseline 7/10; static + runtime golden-boundary probes; `make e2e-base` + s001–010 broken/golden/compose + baseline + advanced all green |
 | **Improvement 1** | `d786ace` | foundation refactor — `harness/evaluate.py` 724→72 and `harness/scenario.py` 699→401 lines; checks split into `harness/checks/` + `harness/patching.py` + `harness/anticheat.py` (declarative **fail-closed** anti-cheat registry); 147 deterministic fast tests in `tests_meta/` (~4 s, no Docker/kind/K8s/network/system `patch`); Ruff; GitHub Actions `ci.yml` (fast push/PR gate) + `e2e.yml` (manual full regression); `make test-fast`/`lint-py`/`compose-all`/`quick`; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | pure refactor: fresh pre-refactor runtime baseline, Phase 4 compare = **0 graded-field differences** (s001/006/008/010 broken+golden); full regression green — broken scores unchanged, golden all 100, baseline 7/10, **advanced 10/10 derived, golden_fallback 0** |
+| **Improvement 2a** | `8ccbe0d` | **agent freeze** — advanced rebuilt from 10 scenario-shaped detectors into 6 composable relationship primitives (`harness/agents/primitives.py`: Evidence signal layer, Finding model, deterministic composition with duplicate collapse + explicit same-region conflict handling) + iterative derive→apply→validate→observe→refine loop (`MAX_DERIVED_ROUNDS=3`, per-round provenance, `allow_golden_fallback` switch); frozen **before** any held-out material existed | fresh pre-refactor baseline; 179 fast tests; full 001–010 regression green — broken unchanged, golden all 100, **baseline 7/10, advanced 10/10 derived (round 1), golden_fallback 0** |
+| **Improvement 2b** | `bd7fa29` | **held-out generalization benchmark** — h01/h02/h03 (A/A/B novelty), generic `service_ports_wired` check + `service_ports_intact` fail-closed anti-cheat rule, `harness agent-generalization` + `make generalization`, golden-access guard, create-once evidence artifact; 229 fast tests | **official first-shot: 2/3 derived** (Type A 2/2, Type B 0/1, fallback 0); h03 failure preserved untuned; held-out golden all 100 + compose identity; artifact sha `3cd075bb…`; `harness/agents/**` byte-identical to the freeze commit throughout |
 
-All work M9→Improvement 1 is on branch `continued-development`; `master` stays at
+All work M9→Improvement 2 is on branch `continued-development`; `master` stays at
 the hackathon submission commit `fc8f7e8`.
 
 ## Intended user, bottleneck, value, failure mode

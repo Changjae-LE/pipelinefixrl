@@ -1274,6 +1274,67 @@ order; none started before this matrix is approved.
     `fc8f7e8c8fb832c392dd40e625ce2ffc53519ff9`;
     `pipelinefixrl-submission.zip` untouched. Module map + extension guide:
     `docs/ARCHITECTURE.md`.
+- **Improvement 2 / Agent generalization + held-out first-shot benchmark ✅** —
+  commits `8ccbe0d62df1c336e2384d45486db52194630892` (**agent freeze**) and
+  `bd7fa2938d70c998268137dc136441302cd6028b` (held-out benchmark + official
+  evidence), branch `continued-development`.
+  - **Architecture (Part A, before any held-out material existed).** The
+    advanced agent's 10 scenario-shaped first-match detectors were replaced by
+    a **primitive-based repair architecture**
+    (`harness/agents/primitives.py`): an Evidence signal layer (typed
+    workload-state signals from the run's own artifacts, incl.
+    `unschedulable`), a `Finding` model, and six relationship primitives
+    (source integrity, chart value wiring, HTTP contract incl. probe *port*,
+    Service wiring incl. targetPort↔containerPort, runtime constraints incl.
+    Unschedulable clamp, config contract) composed **deterministically**
+    (fixed order, edits composed against current candidate bytes, duplicate
+    edits collapsed, same-region conflicts recorded in provenance and skipped,
+    never silently overwritten). Repair is an iterative
+    **derive → apply → validate → observe → refine** loop,
+    `MAX_DERIVED_ROUNDS = 3`, per-round provenance (evidence sources,
+    findings, edit conflicts, rationale, files, validation score/passed,
+    `first_derived_score` vs `final_derived_score`), with the explicit golden
+    replay only after every derived round is exhausted and only when
+    `allow_golden_fallback=True` (False = generalization mode). All nine
+    pre-existing provenance fields kept name and meaning.
+  - **Agent freeze methodology.** Fresh pre-refactor baseline captured first
+    (baseline 7/10, advanced 10/10 derived, golden_fallback 0 re-confirmed at
+    runtime); full 001–010 regression green on the refactored agent (broken
+    scores unchanged, golden all 100, all round-1); then the freeze commit
+    `8ccbe0d`. From that point `harness/agents/**` was **never modified** —
+    verified via `git diff 8ccbe0d… -- harness/agents` (empty) before/after
+    every Part B phase and enforced by a fast test; a static scan proves no
+    held-out id appears in the frozen implementation.
+  - **Held-out benchmark (Part B, authored only after the freeze).**
+    `harness/scenarios/held-out/h01|h02|h03` with honest novelty classes:
+    h01 (**A**) targetPort 9090 vs containerPort 8000; h02 (**A**)
+    request+limit 64Gi → deterministic FailedScheduling (runtime precondition
+    recorded: 64Gi > node allocatable 16185008Ki; a first authoring attempt
+    with request-only 64Gi was rejected by API-server validation and corrected
+    at the definition level); h03 (**B**, genuinely novel) service.port 8081
+    vs the published SVC_PORT contract 80. Evaluation-side additions only:
+    `service_ports_wired` check (clause A published port / clause B
+    targetPort↔containerPort), `service_ports_intact` fail-closed anti-cheat
+    rule (`_RULE_ORDER` → 10), `_scenario_dir` held-out resolution,
+    `harness agent-generalization` + `make generalization`, golden-access
+    guard, create-once evidence artifact writer. Fast suite 179 → **229**.
+  - **Official first-shot result (one run; order per scenario: broken →
+    frozen advanced with fallback disabled under the golden-access guard →
+    archive → only then golden validation).** h01 **100 derived** (round 1),
+    h02 **100 derived** (round 1), h03 **65 `no_change`** — the frozen agent
+    produced no repair for the Type B relationship and the failure is
+    **preserved without tuning**. Aggregate: **2/3 derived, Type A 2/2,
+    Type B 0/1, golden_fallback 0**. Artifact
+    `docs/evidence/generalization-first-shot.json`, SHA256
+    `3cd075bb544c499523fa11aa7694f22aedbf9ca5fbf413ef131093e59ec553cf`,
+    **byte-identical after** the post-archive golden validation (h01/h02/h03
+    golden all 100, anti-cheat clean, expectation MATCH, compose identity).
+  - **Two benchmarks, deliberately separate.** Original development benchmark:
+    scenario-001…010, baseline 7/10, advanced 10/10 derived, golden_fallback 0
+    (performance on faults the agent was developed against). Held-out
+    first-shot: 2/3 derived (frozen-agent generalization probe). The numbers
+    are never merged. Methodology, leakage controls, h03 failure analysis and
+    limitations: `docs/GENERALIZATION.md`.
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
