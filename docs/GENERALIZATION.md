@@ -1,5 +1,13 @@
 # Generalization Evaluation
 
+Two independent held-out evaluations have been run, each against its own
+frozen agent and its own benchmark. **v1 is preserved verbatim below; v2 is a
+separate section. The two results are never merged, and v2 never revises v1.**
+
+---
+
+# v1 Generalization Evaluation
+
 ## Goal
 
 `advanced 10/10 derived` on scenario-001…010 proves the agent can repair the
@@ -144,3 +152,157 @@ Factually:
   replay.
 - The single-node kind environment makes h02's scheduling failure trivially
   reproducible; a multi-node cluster would need a re-derived precondition.
+
+---
+
+# v2 Generalization Evaluation
+
+## V2 Motivation
+
+v1's single Type B case, h03, failed: the frozen v1 agent had no way to use an
+expectation that lives in **consumer evidence** rather than in the tree. Its
+`Evidence` layer already captured the signal (a failed check whose reason named
+the port a consumer tried to reach), but no primitive consumed it.
+
+v2 closes that gap generically. `harness/agents/contracts.py` adds typed
+`Declaration` / `Expectation` / `Reconciliation` records: parsers extract facts
+from a run's own evidence using documented Kubernetes/kubectl error formats, and
+a single deterministic `reconcile()` decides repairs. Ambiguous, insufficient or
+conflicting evidence, duplicate evidence, unresolved resource identity, and a
+current value with independent tree-side corroboration all mean **no change**.
+
+Consequently **h03 became a known development/regression case in v2** — it is
+repaired by the general consumer-contract relationship, with no scenario id,
+path match, or hard-coded value anywhere in agent code. **h03 was not reused as
+v2 held-out evidence, and v1's official 2/3 record is unchanged.** The v2
+development/regression matrix is **13/13 derived** (scenario-001…010 +
+h01/h02/h03); that is regression performance on faults the agent was developed
+against and is **not** generalization evidence.
+
+## V2 Freeze
+
+| | commit |
+|---|---|
+| **V2 agent freeze** | `4d538b74f31e1a13291a61e6cee5744c516183c9` |
+| **Locked benchmark** | `ea980e319ed3b4ab3dc48934d7406cdc4da8e474` |
+| **Official evidence** | `cf03bcd9f2d66d45183ff0254f65718524c33e9c` |
+
+All eight held-out scenarios were authored **after** the freeze commit.
+`harness/agents/**` remained **byte-identical** to `4d538b7` throughout held-out
+authoring, broken-contract validation, the official first-shot, and post-archive
+golden validation — verified with `git diff 4d538b7… -- harness/agents` at every
+gate, and enforced continuously by a fast test. No held-out result was used to
+tune the agent. The 32 scenario files were hash-locked and re-verified at each
+gate.
+
+## V2 Held-Out Taxonomy
+
+| scenario | class | fault relationship | first-shot | rounds | result |
+|---|---|---|---|---|---|
+| vh01 | **A** | liveness probe port vs containerPort (`http_contract.probe_port` — the only frozen diagnosis with no development instance) | **100** | 1 | `derived` |
+| vh02 | **A** | image tag sourced from a defined-but-wrong `.Values.image.*` key (`chart_value_wiring.template_image_ref`) | **100** | 1 | `derived` |
+| vh03 | **A** | `capabilities.drop` emptied alone (`runtime_constraints.security_context`, minimal delta) | **100** | 1 | `derived` |
+| vh04 | **B** | the application binds a port the deployment contract does not expect | **10** | 0 | `no_change` |
+| vh05 | **B** | pod-level seccomp baseline dropped | **85** | 0 | `no_change` |
+| vh06 | **B** | workload scaled to zero (rollout still reports success) | **40** | 0 | `no_change` |
+| vh07 | **Compound** | unserved readiness path **+** emptied capability set | **100** | 1 | `derived` |
+| vh08 | **Compound** | build-blocking conflict hiding a published-port regression | **100** | 2 | `derived` |
+
+**Type A** = a held-out *instance* of a relationship the frozen v2 agent
+explicitly represents. **Type B** = a genuinely novel relationship with no
+dedicated frozen repair branch. Classification was done by inspecting the frozen
+implementation, not by predicting outcomes — which is how two earlier
+provisional labels were corrected before authoring (a *named* `targetPort`
+mismatch turned out to be Type B, not Type A, and the Service-selector repair
+only triggers when the shared helper include is absent).
+
+## V2 Official First-Shot Results
+
+Executed once, fallback disabled, golden-access guard armed, archived before any
+golden run.
+
+- **overall = 5/8 derived**
+- **Type A = 3/3**
+- **Type B = 0/3**
+- **Compound = 2/2**
+- **golden_fallback = 0**
+- **no_change = 3**
+- **exceptions = 0**
+
+vh04, vh05 and vh06 produced `no_change` with **zero derived rounds and no
+primitive match at all**: no frozen primitive represented the required
+relationship, so the agent submitted nothing rather than guessing. The frozen
+agent has no reasoning about the port the application process actually binds, no
+reasoning about the pod-level security context, and no reasoning about workload
+replica capacity. These are not near-misses and they are not softened here:
+**every genuinely novel relationship in this benchmark defeated the agent.**
+
+## Composition / Iteration Findings
+
+**vh07 repaired two independent findings in ONE round.** The composition engine
+produced a single candidate carrying both `http_contract.probe_path` and
+`runtime_constraints.security_context` edits — different regions of the same
+file, no edit conflict. This is the first **production/runtime** evidence that
+same-candidate composition works outside the fast tests.
+
+**vh08 required TWO observed rounds.** Round 1 resolved the build-blocking
+dependency conflict and scored **75**; only once the image built and the release
+deployed did the published-port fault become observable as consumer evidence,
+and round 2 repaired the `Service.port` contract to reach **100**. The archived
+artifact preserves `first_derived_score = 75` so this is never presented as an
+immediate solve. Two rounds were **observed**, not forced by benchmark design —
+the scenario was authored on the hypothesis that the second fault would be
+hidden behind the first, and the run is reported as it happened.
+
+## Golden Validation
+
+Run only **after** the official artifact was archived and hash-frozen:
+
+- vh01–vh08 golden = **100 for all eight**
+- every expectation **MATCH**
+- anti-cheat **clean** on every scenario
+- every `break + golden` composition **byte-identical** to base
+- **no benchmark-methodology defect found**
+
+This is what licenses the interpretation of the Type B results: all three faults
+**are** repairable and their reference repairs score a clean 100, so vh04–vh06
+measure genuine **capability boundaries of the frozen agent**, not invalid or
+unreachable scenarios.
+
+## Evidence
+
+- Artifact: [`evidence/generalization-first-shot-v2.json`](evidence/generalization-first-shot-v2.json)
+- SHA256: `aeb57f0d7aa459fc568f99cafd84d1c1d84db08573a934ae5d94abb74230c4c2`
+- Generated **exactly once**; the writer **refuses overwrite**; the artifact was
+  **byte-identical before and after** post-archive golden validation (verified
+  with `sha256sum -c` at both points); the **official first-shot was never
+  rerun** (confirmed by timestamp — the newest advanced run directory precedes
+  the artifact's `generated_utc`).
+- The artifact records the v2 freeze commit, the locked benchmark commit,
+  per-scenario file hashes, per-round provenance, and `official_first_shot: true`.
+- v1's artifact remains immutable at
+  `3cd075bb544c499523fa11aa7694f22aedbf9ca5fbf413ef131093e59ec553cf`, pinned by
+  a fast test.
+
+Reproduction (unofficial): `python -m harness agent-generalization` drives the
+suite; the official run additionally archived with `--archive`.
+
+## Limitations
+
+- **8 held-out scenarios is still a small benchmark.** It is a controlled probe,
+  not a survey, and supports no statistical claim.
+- **Only 3 of the 8 are genuinely novel (Type B) relationships.** Three are
+  Type A instances and two are Compound cases built from represented
+  relationships.
+- **Type A success does not demonstrate unseen fault-class discovery.** It shows
+  those specific relationships were implemented generally enough to survive a
+  new instance — nothing more.
+- **Type B = 0/3 is a clear capability boundary.** The primitive set covers a
+  fixed, reusable family of relationships; anything outside it yields an honest
+  `no_change`, never a silent golden rescue.
+- **No universal generalization claim is made**, in v1 or v2. The trajectory
+  (v1 2/3 → v2 5/8 on a larger, harder benchmark) reflects one closed capability
+  gap, not general repair ability.
+- Environment-dependent scenarios (h02's scheduling floor, vh01's liveness
+  timing window) are tuned to a single-node kind cluster and would need
+  re-derived preconditions elsewhere.

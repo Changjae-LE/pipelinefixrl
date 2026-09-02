@@ -41,7 +41,8 @@ harness.scenario        _evidence_scan · _check_expect ─► verdict.json / ch
 | `harness/checks/build.py` | `image_pull_ok`, `no_oomkill`, `image_build_ok`, `git_tree_resolved` |
 | `harness/evaluate.py` | orchestration only: `evaluate()` (backbone + activated scenario checks + weight re-balance + score + `checks.json`), `is_healthy()`, and back-compat re-exports so `harness.evaluate` stays a stable import point |
 | `harness/scenario.py` | `run_scenario()` orchestration, `_finish_build_failure` (the "image never built" path), `_evidence_scan`, `_check_expect`, `compose_check`, `cleanup_scenario_ns` |
-| `harness/agents/primitives.py` | the advanced agent's repair layer: **Evidence** (typed workload-state signals parsed from a run's own artifacts — events/pods/logs/build/CI + failed-check reasons), the **Finding** model (primitive · diagnosis · rationale · edits), six relationship **primitives** (source integrity, chart value wiring, HTTP contract incl. probe port, Service wiring incl. targetPort↔containerPort, runtime constraints incl. Unschedulable clamp, config contract), and the deterministic **composition engine** (fixed order, edits composed against current candidate bytes, duplicates collapsed, same-region conflicts recorded + skipped) |
+| `harness/agents/primitives.py` | the advanced agent's repair layer: **Evidence** (typed workload-state signals parsed from a run's own artifacts — events/pods/logs/build/CI + failed-check reasons), the **Finding** model (primitive · diagnosis · rationale · edits), seven relationship **primitives** (source integrity, chart value wiring, HTTP contract incl. probe port, Service wiring incl. targetPort↔containerPort, runtime constraints incl. Unschedulable clamp, config contract, and — v2 — consumer contract), and the deterministic **composition engine** (fixed order, edits composed against current candidate bytes, duplicates collapsed, same-region conflicts recorded + skipped) |
+| `harness/agents/contracts.py` | **v2 endpoint-contract reasoning**: typed `Declaration` (the tree provides an endpoint attribute) / `Expectation` (a consumer named one) / `Reconciliation` (a decided repair). Evidence **parsers extract facts only**; the single `reconcile()` is the only place a repair is decided. Extraction patterns are anchored to documented Kubernetes/kubectl error formats, never to benchmark output |
 | `harness/agents/fix_agent.py` | `baseline` (offline heuristic) + `advanced`: the iterative **derive → apply → validate → observe → refine** loop over the primitives (`MAX_DERIVED_ROUNDS = 3`, per-round provenance incl. `first_derived_score` vs `final_derived_score`); the explicit golden replay runs only after all derived rounds are exhausted **and** only when `allow_golden_fallback=True` — that flag is the fallback boundary the generalization benchmark disables; `harness agent` / `harness agent-matrix` |
 | `harness/generalization.py` | held-out first-shot evaluation (benchmark side): runs the **frozen** agent (`AGENT_FREEZE_COMMIT`) with the fallback disabled under a **golden-access guard** (any Python-side read of a `golden` path raises), archives the create-once evidence artifact, then post-archive golden validation; `harness agent-generalization` / `make generalization` |
 
@@ -68,9 +69,59 @@ Every round is recorded in `advanced_provenance.json` (evidence sources,
 findings, edit conflicts, rationale, files, validation score/passed); the
 derivation path never reads golden material — enforced by static tokenize
 scans, runtime path-poisoning tests, and the generalization runner's guard.
-**Frozen-agent boundary:** since the freeze commit `8ccbe0d…`,
-`harness/agents/**` is byte-identical to that commit (held-out work lives
-entirely on the evaluation side); see `docs/GENERALIZATION.md`.
+**Frozen-agent boundary:** each held-out evaluation pins `harness/agents/**`
+byte-identical to its freeze commit — `8ccbe0d…` for v1, `4d538b7…` for v2 —
+with all held-out work living entirely on the evaluation side; see
+`docs/GENERALIZATION.md`.
+
+## Consumer-contract reasoning (v2)
+
+Most primitives reconcile two *declarations* inside the tree (X in file A vs Y
+in file B). Some expectations, though, live only outside it: a consumer failure
+that names the endpoint it tried to reach. v2 makes those first-class.
+
+```
+run's own evidence (failed-check reasons, events, logs)
+        │
+        ▼  typed fact extraction — parsers only, no decisions
+   Expectation{kind, name, attribute, value, authoritative}
+                    +
+   Declaration{kind, attribute, value, source}   ◄── the candidate tree
+        │
+        ▼  deterministic reconciliation — the ONLY decision point
+   Reconciliation{current -> expected}   ──►  Finding
+        │
+        ▼
+   edit composition ─► validation ─► iterative observe/refine loop
+```
+
+Reconciliation refuses to act unless the evidence is unambiguous. **No change**
+is returned when: the evidence names no resource/value (ambiguous); there is no
+declaration, or it already satisfies the contract (insufficient); two equally
+attested expectations disagree (conflicting); the resource identity cannot be
+resolved; or the current value has independent tree-side corroboration.
+Duplicate evidence never amplifies attestation — attestation is the set of
+distinct expected values, never an occurrence count.
+
+This is why h03 (v1's held-out failure) is repaired in v2 **by the general
+relationship, not by a scenario-specific branch**: a consumer error naming the
+port it expected is reconciled against the tree's declaration. No agent module
+contains a scenario id, a held-out id, or the faulty value — enforced by static
+tests.
+
+**Why the iterative loop matters — observed, not hypothetical.** In the v2
+held-out run, vh08 carried a build-blocking dependency conflict *and* a
+published-port regression. Round 1 could only see a build failure, so it
+resolved the conflict and scored 75; the port fault became observable as
+consumer evidence only once the image built and deployed, and round 2 repaired
+it to 100. A single-shot design would have stopped at 75.
+
+**Represented vs absent relationships.** The primitives cover a fixed, reusable
+family of relationships. Faults outside that family produce an honest
+`no_change` rather than a guess — in the v2 held-out benchmark, vh04 (the port
+the application process actually binds), vh05 (pod-level security context) and
+vh06 (workload replica capacity) each matched no primitive at all. That
+boundary is real and documented, not a defect.
 
 ## Extending
 

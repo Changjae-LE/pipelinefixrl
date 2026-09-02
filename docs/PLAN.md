@@ -1335,6 +1335,86 @@ order; none started before this matrix is approved.
     first-shot: 2/3 derived (frozen-agent generalization probe). The numbers
     are never merged. Methodology, leakage controls, h03 failure analysis and
     limitations: `docs/GENERALIZATION.md`.
+- **v2 / Consumer-contract reasoning + second held-out benchmark ✅** — branch
+  `v2-generalization`, commits `4d538b74f31e1a13291a61e6cee5744c516183c9`
+  (**v2 agent freeze**), `ea980e319ed3b4ab3dc48934d7406cdc4da8e474` (locked
+  held-out benchmark) and `cf03bcd9f2d66d45183ff0254f65718524c33e9c` (official
+  evidence). All v1 entries above stand unchanged.
+  - **Architecture (Option B on a minimal typed contract-data-model seed).**
+    `harness/agents/contracts.py` adds endpoint-contract reasoning:
+    runtime/tree evidence → typed fact extraction → `Declaration` /
+    `Expectation` → deterministic `reconcile()` → `Reconciliation` → `Finding`
+    → existing edit composition → validation → iterative observe/refine loop.
+    Evidence **parsers extract facts only** (test-enforced: no parser
+    constructs a `Reconciliation`); every repair decision lives in the single
+    generic reconciliation step; ambiguous, insufficient or conflicting
+    evidence, duplicate evidence, unresolved resource identity and
+    tree-corroborated current values all mean **no change**. Extraction
+    patterns are anchored to documented Kubernetes/kubectl error formats,
+    never to benchmark output. Primitives 6 → 7 (`consumer_contract`).
+  - **h03 reclassified.** v1's Type B failure is repaired in v2 **by the
+    general relationship**, with no scenario id, path match or hard-coded value
+    in agent code. h03 (with h01/h02) is therefore a **known
+    development/regression case** in v2 — **not** held-out evidence. v1's
+    official 2/3 record and its artifact
+    (`3cd075bb544c499523fa11aa7694f22aedbf9ca5fbf413ef131093e59ec553cf`) are
+    unchanged and hash-pinned by a fast test.
+  - **v2 development/regression matrix = 13/13 derived** (scenario-001…010 +
+    h01/h02/h03), golden_fallback 0, baseline 7/10, every original broken score
+    identical to the pre-v2 baseline, all repairs in round 1. **This is
+    regression performance on faults the agent was developed against — it is
+    NOT held-out generalization evidence.**
+  - **V2 agent freeze.** Established at `4d538b7` after the regression matrix
+    passed. `harness/agents/**` stayed byte-identical to it through held-out
+    authoring, broken-contract validation, the official first-shot and
+    post-archive golden validation — verified at every gate and enforced by a
+    fast test.
+  - **Held-out benchmark authored after the freeze** —
+    `harness/scenarios/held-out-v2/vh01…vh08`, composition **3 Type A / 3 Type
+    B / 2 Compound**, classified by inspecting the frozen implementation rather
+    than by predicting outcomes. Benchmark-side additions only: generic
+    `pod_security_baseline` and `workload_capacity` checks; generic
+    `probe_contract_intact`, `min_replicas` and `frozen_paths_intact`
+    anti-cheat rules (`_RULE_ORDER` 10 → 13; checks 13 → 15); a `held-out-v2`
+    loader root; and a generic scenario-declared `settle_seconds` observation
+    window (default 0). Two authoring defects were caught by inspection and
+    corrected before locking: vh04 originally mutated `containerPort`, which is
+    informational in Kubernetes and produced no runtime symptom (it now moves
+    the process's actual listener while the chart stays self-consistent), and
+    vh01 needed the settle window because the rollout reports success ~20 s
+    before the liveness probe kills the container. All eight broken contracts
+    were validated at runtime **before any agent run**; golden patches were
+    validated statically only; 32 scenario hashes were locked.
+  - **Official first-shot (one run, fallback disabled, golden-access guard
+    armed, archived before any golden run): 5/8 derived** — **Type A 3/3**,
+    **Type B 0/3**, **Compound 2/2**, **golden_fallback 0**, **no_change 3**,
+    **exceptions 0**. vh04/vh05/vh06 matched no primitive at all and produced
+    `no_change` with zero derived rounds: the frozen agent has no reasoning
+    about the port the application actually binds, the pod-level security
+    context, or workload capacity. **No post-result tuning occurred.**
+  - **Composition / iteration, observed in production.** vh07 repaired **two
+    independent findings in ONE round** (first runtime evidence that
+    same-candidate composition works outside the fast tests). vh08 required
+    **two observed rounds**: round 1 resolved the build-blocking conflict and
+    scored **75**; only then did the published-port fault become observable as
+    consumer evidence, and round 2 reached **100**. Two rounds were observed,
+    not forced by design, and `first_derived_score = 75` is preserved.
+  - **Post-archive golden validation: 8/8 at score 100**, every expectation
+    MATCH, anti-cheat clean, every `break + golden` composition byte-identical
+    to base — no benchmark-methodology defect. This is what licenses reading
+    the three Type B results as genuine frozen-agent capability boundaries
+    rather than invalid scenarios.
+  - **Evidence.** `docs/evidence/generalization-first-shot-v2.json`, SHA256
+    `aeb57f0d7aa459fc568f99cafd84d1c1d84db08573a934ae5d94abb74230c4c2`,
+    generated exactly once (writer refuses overwrite) and byte-identical before
+    and after golden validation; the official first-shot was never rerun. Fast
+    suite 337 tests. Methodology, taxonomy and limitations:
+    `docs/GENERALIZATION.md`.
+  - **Trajectory, stated honestly.** v1: development 10/10 derived, official
+    held-out **2/3**. v2: development/regression **13/13** derived, official
+    held-out **5/8** on a larger and harder benchmark. The improvement reflects
+    one closed capability gap (consumer-side contract reasoning), not general
+    repair ability; no universal-generalization claim is made.
 
 | Milestone | Scenario | Base change? | Regression gate before it | Gate ≈ | Scenario suite ≈ |
 |-----------|----------|--------------|---------------------------|-------:|-----------------:|
