@@ -1,4 +1,8 @@
-"""harness.agents.fix_agent._derive_repair fault-class detectors (offline)."""
+"""Per-scenario derivation through the primitive engine (offline).
+
+Each 001-010 broken tree must still derive the same fault-removing repair via
+fix_agent._derive_repair (now a single compose pass over the repair
+primitives); the diagnosis token names the relationship, not the scenario."""
 
 import pytest
 import yaml

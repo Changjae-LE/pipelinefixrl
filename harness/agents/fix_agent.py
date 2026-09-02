@@ -13,17 +13,23 @@ inspects routes / tests / runtime evidence, so it stays clearly weaker than
 advanced and 004/005/006 are outside its reach — a deliberate, visible
 capability boundary.
 
-advanced — a *deriving* fixer. Its primary path (``_derive_repair``) constructs
-the repair from **scenario-visible evidence only**: ``task.md``, the broken
-scenario tree's own source files, and the collected runtime evidence
-(events/pods/logs/build.log/ci.log) from a broken run. It NEVER reads
-``golden.patch``, the golden variant, or any expected-repaired-file content on
-the derivation path. Only if the derived repair fails its own validation
-(SCORE 100 + anti-cheat clean) does ``run`` fall back — explicitly and visibly —
-to replaying the scenario's ``golden.patch``. Every advanced result records its
-provenance (repair_mode / derived_attempted / derived_validation_passed /
-fallback_used / final_score / files_modified) to ``advanced_provenance.json`` and
-the eval matrix, so a fallback success is never presented as a derived success.
+advanced — a *deriving* fixer built from composable repair primitives
+(``harness.agents.primitives``): each primitive reasons about one reusable
+relationship (probe/HTTP contract, chart value wiring, Service wiring, runtime
+constraints, config contracts, source integrity) over **scenario-visible
+evidence only** — the broken tree's own source files plus the collected runtime
+evidence (events/pods/logs/build.log/ci.log) of its own runs. Repair is an
+iterative loop: derive → apply → validate → observe the new evidence → refine,
+up to ``MAX_DERIVED_ROUNDS`` rounds; every round is recorded in provenance. The
+derivation path NEVER reads ``golden.patch``, the golden variant, or any
+expected-repaired-file content. Only after every derived round is exhausted
+does ``run`` fall back — explicitly, visibly, and only when
+``allow_golden_fallback`` is true — to replaying the scenario's
+``golden.patch``. Every advanced result records its provenance
+(repair_mode / derived_attempted / derived_validation_passed / fallback_used /
+final_score / files_modified / per-round history) to
+``advanced_provenance.json`` and the eval matrix, so a fallback success is
+never presented as a derived success.
 """
 
 from __future__ import annotations
@@ -31,18 +37,25 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 
-import yaml
-
 from harness import scenario as scenmod
+from harness.agents import primitives as prim
+from harness.agents.primitives import (  # noqa: F401 — shared helpers (+ compat re-exports)
+    Evidence,
+    _conflict_files,
+    _resolve_conflict_keep_head,
+    _routes,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 AGENTS_STATE = REPO_ROOT / ".state" / "agents"
 RUNS_DIR = REPO_ROOT / ".state" / "runs"
 
-_CONFLICT_SKIP = {"__pycache__", ".git", ".pytest_cache", ".ruff_cache", "node_modules"}
+# deterministic cap on derive → validate → refine rounds before any fallback
+MAX_DERIVED_ROUNDS = 3
 
 # --- baseline: literal, offline heuristics -------------------------------------
 # (relpath, regex, replacement) applied to the broken tree. Deliberately dumb:
@@ -77,385 +90,38 @@ def _base_after_break(scenario_id, dst):
 
 
 # ---------------------------------------------------------------------------
-# shared: conflict-marker helpers
+# advanced: primitive-based derivation
 # ---------------------------------------------------------------------------
-def _is_marker(ln):
-    return ln == "=======" or ln.startswith("<<<<<<< ") or ln.startswith(">>>>>>> ")
-
-
-def _conflict_files(tree):
-    hits = []
-    for f in sorted(tree.rglob("*")):
-        if not f.is_file() or _CONFLICT_SKIP.intersection(f.parts):
-            continue
-        try:
-            txt = f.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        if any(_is_marker(ln) for ln in txt.splitlines()):
-            hits.append(f)
-    return hits
-
-
-def _resolve_conflict_keep_head(text):
-    """Drop conflict markers, keep the HEAD side of every hunk."""
-    out, mode = [], "keep"
-    for ln in text.splitlines(keepends=True):
-        s = ln.rstrip("\r\n")
-        if s.startswith("<<<<<<< "):
-            mode = "head"
-            continue
-        if s == "=======":
-            mode = "theirs"
-            continue
-        if s.startswith(">>>>>>> "):
-            mode = "keep"
-            continue
-        if mode in ("keep", "head"):
-            out.append(ln)
-    return "".join(out)
-
-
-# ---------------------------------------------------------------------------
-# advanced: fault-class detectors  (evidence = broken tree + runtime artifacts;
-# NEVER golden.patch / golden tree / expected file content)
-# ---------------------------------------------------------------------------
-def _yload(path):
-    try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
-
-
-def _mem_bytes(v):
-    if v is None:
-        return 0
-    s = str(v).strip()
-    num = s.rstrip("KMGkmgi") or "0"
-    unit = s[len(num):].lower()
-    mul = {"": 1, "k": 1000, "m": 1000**2, "g": 1000**3,
-           "ki": 1024, "mi": 1024**2, "gi": 1024**3}.get(unit, 1)
-    try:
-        return int(float(num) * mul)
-    except ValueError:
-        return 0
-
-
-def _routes(tree):
-    try:
-        src = (tree / "app" / "main.py").read_text(encoding="utf-8")
-    except OSError:
-        return set()
-    return set(re.findall(r'@app\.(?:get|post|put|delete|patch)\(\s*["\']([^"\']+)["\']', src))
-
-
-def _ev_text(run_dir, *names):
-    blob = ""
-    for n in names:
-        p = run_dir / n
-        if p.is_dir():
-            for f in sorted(p.glob("*")):
-                try:
-                    blob += f.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    pass
-        elif p.exists():
-            try:
-                blob += p.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
-    return blob
-
-
-def _detect_conflict(tree, ev):
-    files = _conflict_files(tree)
-    if not files:
-        return None
-    return [(f.relative_to(tree).as_posix(),
-             _resolve_conflict_keep_head(f.read_text(encoding="utf-8")).encode("utf-8"))
-            for f in files], "unresolved merge conflict — resolved every hunk to its HEAD side"
-
-
-def _detect_probe_path(tree, ev):
-    vp = tree / "charts" / "app" / "values.yaml"
-    v = _yload(vp)
-    routes = _routes(tree)
-    if not routes:
-        return None
-    bad = []
-    for probe in ("readinessProbe", "livenessProbe"):
-        path = (((v.get(probe) or {}).get("httpGet")) or {}).get("path")
-        if path and path not in routes:
-            bad.append(path)
-    if not bad:
-        return None
-    target = "/health" if "/health" in routes else sorted(routes)[0]
-    text = vp.read_text(encoding="utf-8")
-    for p in set(bad):
-        text = text.replace(f"path: {p}\n", f"path: {target}\n")
-    return [("charts/app/values.yaml", text.encode("utf-8"))], (
-        f"probe path {sorted(set(bad))} is not a route the app serves {sorted(routes)}; "
-        f"repointed to {target}"
-    )
-
-
-def _detect_image_override(tree, ev):
-    vp = tree / "charts" / "app" / "values.yaml"
-    v = _yload(vp)
-    override = ((v.get("image") or {}).get("tagOverride")) or ""
-    if not override:
-        return None
-    corrob = any(k in ev for k in ("ErrImageNeverPull", "ImagePullBackOff", "ErrImagePull"))
-    text = re.sub(r"(\n\s*tagOverride:\s*).*", r'\1""', vp.read_text(encoding="utf-8"), count=1)
-    return [("charts/app/values.yaml", text.encode("utf-8"))], (
-        f"image.tagOverride pins {override!r} which is not present on the node"
-        + (" (ErrImageNeverPull observed)" if corrob else "")
-        + "; cleared the override so the built unique tag is used"
-    )
-
-
-def _detect_oom_memory(tree, ev):
-    vp = tree / "charts" / "app" / "values.yaml"
-    v = _yload(vp)
-    res = v.get("resources") or {}
-    req = _mem_bytes((res.get("requests") or {}).get("memory"))
-    lim = _mem_bytes((res.get("limits") or {}).get("memory"))
-    oom = "OOMKilled" in ev or '"exitCode": 137' in ev or "exitCode: 137" in ev
-    if not oom and req >= 64 * 1024**2 and lim >= 128 * 1024**2:
-        return None
-    out, section = [], None
-    for ln in vp.read_text(encoding="utf-8").splitlines(keepends=True):
-        st = ln.strip()
-        if st == "requests:":
-            section = "req"
-        elif st == "limits:":
-            section = "lim"
-        elif st.startswith("memory:") and section == "req":
-            ln = ln[: ln.index("memory:")] + "memory: 64Mi\n"
-        elif st.startswith("memory:") and section == "lim":
-            ln = ln[: ln.index("memory:")] + "memory: 128Mi\n"
-        elif ln and not ln[0].isspace():
-            section = None
-        out.append(ln)
-    return [("charts/app/values.yaml", "".join(out).encode("utf-8"))], (
-        "container OOMKilled on startup" if oom else "memory limits below a safe floor"
-    ) + "; raised requests/limits memory to 64Mi/128Mi"
-
-
-def _detect_template_image_ref(tree, ev):
-    dp = tree / "charts" / "app" / "templates" / "deployment.yaml"
-    try:
-        lines = dp.read_text(encoding="utf-8").splitlines(keepends=True)
-    except OSError:
-        return None
-    v = _yload(tree / "charts" / "app" / "values.yaml")
-    defined = set((v.get("image") or {}).keys())
-    for i, ln in enumerate(lines):
-        if ln.lstrip().startswith("image:"):
-            refs = set(re.findall(r"\.Values\.image\.([A-Za-z0-9_]+)", ln))
-            undefined = refs - defined - {"tag", "repository", "tagOverride", "pullPolicy"}
-            if not undefined and ".Values.image.tag" in ln and "required" in ln:
-                return None
-            indent = ln[: len(ln) - len(ln.lstrip())]
-            lines[i] = (
-                indent
-                + 'image: "{{ .Values.image.repository }}:'
-                + '{{ .Values.image.tagOverride | default '
-                + '(required "image.tag is required and must not be \'latest\'" '
-                + '.Values.image.tag) }}"\n'
-            )
-            return [("charts/app/templates/deployment.yaml", "".join(lines).encode("utf-8"))], (
-                f"deployment image ref uses undefined value key(s) {sorted(undefined) or refs}; "
-                "rebuilt it from .Values.image.repository + .Values.image.tag with a required guard"
-            )
-    return None
-
-
-def _detect_service_selector(tree, ev):
-    sp = tree / "charts" / "app" / "templates" / "service.yaml"
-    dp = tree / "charts" / "app" / "templates" / "deployment.yaml"
-    try:
-        svc = sp.read_text(encoding="utf-8")
-        dep = dp.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if 'include "app.selectorLabels"' in svc or 'include "app.selectorLabels"' not in dep:
-        return None
-    out, lines = [], svc.splitlines(keepends=True)
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        out.append(ln)
-        if ln.rstrip().endswith("selector:") and ln.strip() == "selector:":
-            base_indent = len(ln) - len(ln.lstrip())
-            out.append(" " * (base_indent + 2) + '{{- include "app.selectorLabels" . | nindent '
-                       + str(base_indent + 2) + " }}\n")
-            i += 1
-            while i < len(lines) and (not lines[i].strip() or
-                                      len(lines[i]) - len(lines[i].lstrip()) > base_indent):
-                i += 1
-            continue
-        i += 1
-    return [("charts/app/templates/service.yaml", "".join(out).encode("utf-8"))], (
-        "Service selector is hard-coded and no longer matches the Deployment; "
-        "re-derived it from the shared app.selectorLabels helper"
-    )
-
-
-_HARDENED_SC = (
-    "securityContext:\n"
-    "  runAsNonRoot: true\n"
-    "  runAsUser: 1000\n"
-    "  allowPrivilegeEscalation: false\n"
-    "  readOnlyRootFilesystem: true\n"
-    "  capabilities:\n"
-    "    drop:\n"
-    "      - ALL\n"
-)
-
-
-def _detect_security_context(tree, ev):
-    vp = tree / "charts" / "app" / "values.yaml"
-    v = _yload(vp)
-    sc = v.get("securityContext") or {}
-    ru = sc.get("runAsUser")
-    hardened = (
-        sc.get("runAsNonRoot") is True
-        and isinstance(ru, int) and not isinstance(ru, bool) and ru >= 1000
-        and sc.get("allowPrivilegeEscalation") is False
-        and sc.get("readOnlyRootFilesystem") is True
-        and "ALL" in ((sc.get("capabilities") or {}).get("drop") or [])
-    )
-    if hardened:
-        return None
-    lines = vp.read_text(encoding="utf-8").splitlines(keepends=True)
-    out, i = [], 0
-    while i < len(lines):
-        ln = lines[i]
-        if ln.strip() == "securityContext:" and not ln[0].isspace():
-            out.append(_HARDENED_SC)
-            i += 1
-            while i < len(lines) and (not lines[i].strip() or lines[i][0].isspace()):
-                i += 1
-            continue
-        out.append(ln)
-        i += 1
-    return [("charts/app/values.yaml", "".join(out).encode("utf-8"))], (
-        "container securityContext is not hardened; applied the standard hardened "
-        "posture (non-root uid 1000, RO rootfs, no priv-esc, drop ALL caps)"
-    )
-
-
-def _detect_configmap_key(tree, ev):
-    dp = tree / "charts" / "app" / "templates" / "deployment.yaml"
-    cp = tree / "charts" / "app" / "templates" / "configmap.yaml"
-    vp = tree / "charts" / "app" / "values.yaml"
-    try:
-        dep = dp.read_text(encoding="utf-8")
-        cm = cp.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if "configMapKeyRef" not in dep or ".Values.config.key" not in dep:
-        return None
-    data_block = re.split(r"(?m)^data:\s*$", cm)[-1] if re.search(r"(?m)^data:\s*$", cm) else ""
-    cm_keys = re.findall(r"(?m)^\s{2}([A-Za-z0-9_][\w.-]*):", data_block)
-    v = _yload(vp)
-    cur = (v.get("config") or {}).get("key")
-    if cur in cm_keys or not cm_keys:
-        return None
-    want = cm_keys[0]
-    out, section = [], None
-    for ln in vp.read_text(encoding="utf-8").splitlines(keepends=True):
-        if ln.strip() == "config:" and not ln[0].isspace():
-            section = "config"
-        elif ln and not ln[0].isspace():
-            section = None
-        if section == "config" and ln.strip().startswith("key:"):
-            ln = ln[: ln.index("key:")] + f"key: {want}\n"
-        out.append(ln)
-    return [("charts/app/values.yaml", "".join(out).encode("utf-8"))], (
-        f"configMapKeyRef asks for key {cur!r} which the ConfigMap does not define "
-        f"{cm_keys}; set config.key to {want!r}"
-    )
-
-
-def _detect_log_format(tree, ev):
-    vp = tree / "charts" / "app" / "values.yaml"
-    v = _yload(vp)
-    fmt = str(v.get("logFormat") or "")
-    try:
-        obs = (tree / "app" / "obs.py").read_text(encoding="utf-8")
-    except OSError:
-        obs = ""
-    if fmt == "json" or '"json"' not in obs:
-        return None
-    text = re.sub(r"(\n\s*logFormat:\s*)\S+", r"\1json", vp.read_text(encoding="utf-8"), count=1)
-    return [("charts/app/values.yaml", text.encode("utf-8"))], (
-        f"logFormat is {fmt!r}; the app's obs.py supports a structured 'json' mode — set it"
-    )
-
-
-def _detect_health_contract(tree, ev):
-    try:
-        main = (tree / "app" / "main.py").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    asserted = None
-    for tf in sorted((tree / "tests").glob("*.py")) if (tree / "tests").is_dir() else []:
-        m = re.search(r"\.get\(\s*[\"']/health[\"']\s*\)[\s\S]{0,200}?\.json\(\)\s*==\s*(\{[^}]*\})",
-                      tf.read_text(encoding="utf-8"))
-        if m:
-            asserted = m.group(1)
-            break
-    if not asserted:
-        return None
-    cur = re.search(r"/health[\s\S]{0,200}?JSONResponse\(\s*(\{[^}]*\})", main)
-    if not cur or _norm(cur.group(1)) == _norm(asserted):
-        return None
-    text = main.replace(cur.group(1), asserted, 1)
-    return [("app/main.py", text.encode("utf-8"))], (
-        f"/health returns {cur.group(1)} but the health test asserts {asserted}; aligned the handler"
-    )
-
-
-def _norm(s):
-    return re.sub(r"\s+", "", s)
-
-
-_DETECTORS = [
-    _detect_conflict,
-    _detect_probe_path,
-    _detect_image_override,
-    _detect_oom_memory,
-    _detect_template_image_ref,
-    _detect_service_selector,
-    _detect_security_context,
-    _detect_configmap_key,
-    _detect_log_format,
-    _detect_health_contract,
-]
-
-
 def _derive_repair(scenario_id, broken_run_dir):
-    """Derive a repair from scenario-visible evidence only. Returns
-    (edits, rationale) with edits = [(relpath, new_bytes), ...] (possibly []).
-    Never touches golden.patch / the golden variant / expected file content."""
+    """One derivation pass (round-1 semantics): compose every repair primitive
+    against a scratch copy of the broken tree, using only the run's own
+    evidence. Returns (edits, rationale) with edits = [(relpath, new_bytes)].
+    Never touches golden material."""
     tree = broken_run_dir / "tree"
-    ev = _ev_text(broken_run_dir, "events.txt", "events.json", "pods.json",
-                  "build.log", "ci.log", "logs")
-    for det in _DETECTORS:
-        try:
-            res = det(tree, ev)
-        except Exception as exc:  # noqa: BLE001 - a detector crash just means "no match"
-            res = None
-            print(f"  [advanced] detector {det.__name__} errored: {exc}")
-        if res:
-            edits, rationale = res
-            edits = [(rel, nb) for rel, nb in edits
-                     if (tree / rel).read_bytes() != nb]
-            if edits:
-                return edits, f"{det.__name__[8:]}: {rationale}"
-    return [], "no known fault-class detector matched the broken tree / evidence"
+    ev = Evidence(broken_run_dir)
+    with tempfile.TemporaryDirectory() as td:
+        work = pathlib.Path(td) / "work"
+        shutil.copytree(tree, work)
+        res = prim.compose(work, ev)
+        edits = [(rel, (work / rel).read_bytes()) for rel in sorted(res.changed)]
+    if not edits:
+        return [], "no repair primitive matched the broken tree / evidence"
+    return edits, "; ".join(res.rationales)
+
+
+def _validate_candidate(scenario_id, patch):
+    """Score a candidate patch through the unchanged harness (monkeypatchable
+    seam for the fast tests)."""
+    return scenmod.run_scenario(scenario_id, "advanced", enforce=False, agent_patch=patch)
+
+
+def _safe_cleanup_advanced(scenario_id):
+    """Delete the namespace of the most recent advanced run (a failed derived
+    round) so iterative rounds don't leak namespaces. Best-effort."""
+    try:
+        scenmod.cleanup_scenario_ns(scenario_id, "advanced")
+    except Exception as exc:  # noqa: BLE001 — cleanup must never abort the loop
+        print(f"  [advanced] round cleanup skipped: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -516,8 +182,13 @@ def _baseline_patch(scenario_id, out_dir):
         return (p if p.read_text() else None), ("heuristic" if p.read_text() else "no_change")
 
 
-def run(scenario_id, tier, enforce=False):
-    """Plan the fix, score it through the unchanged harness, record provenance."""
+def run(scenario_id, tier, enforce=False, allow_golden_fallback=True):
+    """Plan the fix, score it through the unchanged harness, record provenance.
+
+    ``allow_golden_fallback=False`` (generalization mode) disables the golden
+    replay entirely: after the derived rounds are exhausted the result is
+    reported as ``failed`` / ``no_change`` — a fallback score can then never
+    masquerade as a repair."""
     if tier not in ("baseline", "advanced"):
         raise ValueError("tier must be 'baseline' or 'advanced'")
     out_dir = AGENTS_STATE / scenario_id
@@ -539,48 +210,107 @@ def run(scenario_id, tier, enforce=False):
             json.dumps(prov, indent=2), encoding="utf-8")
         return rid, score, verdict, prov
 
-    # ---- advanced: derive first, golden-replay only as an explicit fallback ----
+    # ---- advanced: iterative derive → validate → refine, fallback last ----
     prov = {"scenario": scenario_id, "tier": "advanced", "repair_mode": None,
             "derived_attempted": False, "derived_validation_passed": False,
             "fallback_used": False, "final_score": None, "files_modified": [],
-            "rationale": None}
+            "rationale": None,
+            # iterative extension (Improvement 2) — additive; every pre-existing
+            # key above keeps its name and meaning.
+            "allow_golden_fallback": bool(allow_golden_fallback),
+            "derived_rounds_attempted": 0, "derived_rounds": [],
+            "first_derived_score": None, "final_derived_score": None}
 
     broken_dir = _latest_broken_run(scenario_id) or _fresh_broken_run(scenario_id)
-    edits, rationale = _derive_repair(scenario_id, broken_dir)
-    prov["rationale"] = rationale
-    verdict = {}
-    rid = None
+    broken_tree = broken_dir / "tree"
+    cumulative: dict[str, bytes] = {}   # rel -> candidate bytes (vs broken tree)
+    evidence_dir = broken_dir
+    rid, score, verdict = None, None, {}
 
-    if edits:
+    for rnd in range(1, MAX_DERIVED_ROUNDS + 1):
+        ev = Evidence(evidence_dir)
+        with tempfile.TemporaryDirectory() as td:
+            work = pathlib.Path(td) / "work"
+            shutil.copytree(broken_tree, work)
+            for rel, nb in cumulative.items():
+                (work / rel).parent.mkdir(parents=True, exist_ok=True)
+                (work / rel).write_bytes(nb)
+            res = prim.compose(work, ev)
+            new_cum = dict(cumulative)
+            for rel in res.changed:
+                new_cum[rel] = (work / rel).read_bytes()
+        new_cum = {rel: nb for rel, nb in new_cum.items()
+                   if nb != (broken_tree / rel).read_bytes()}
+        if not res.changed or new_cum == cumulative:
+            break  # no primitive can refine further
+        cumulative = new_cum
+
         prov["derived_attempted"] = True
-        prov["files_modified"] = sorted({rel for rel, _ in edits})
-        patch = _edits_to_patch(broken_dir / "tree", edits, out_dir / "advanced-derived.patch")
-        print(f"[advanced] {scenario_id}: DERIVED {prov['files_modified']} :: {rationale}")
-        rid, score, verdict = scenmod.run_scenario(scenario_id, "advanced", enforce=False,
-                                                   agent_patch=patch)
-        prov["final_score"] = score
-        prov["derived_validation_passed"] = bool(
-            score == 100 and not verdict.get("anticheat_violations")
-            and verdict.get("matches_expectation")
-        )
-        if prov["derived_validation_passed"]:
+        prov["derived_rounds_attempted"] = rnd
+        rationale = "; ".join(res.rationales)
+        prov["rationale"] = rationale
+        prov["files_modified"] = sorted(cumulative)
+        patch = _edits_to_patch(broken_tree, sorted(cumulative.items()),
+                                out_dir / "advanced-derived.patch")
+        print(f"[advanced] {scenario_id}: round {rnd} DERIVED "
+              f"{sorted(cumulative)} :: {rationale}")
+        if rnd > 1:
+            _safe_cleanup_advanced(scenario_id)  # previous round's namespace
+        rid, score, verdict = _validate_candidate(scenario_id, patch)
+        passed = bool(score == 100 and not verdict.get("anticheat_violations")
+                      and verdict.get("matches_expectation"))
+        prov["derived_rounds"].append({
+            "round": rnd,
+            "evidence_sources": ev.sources,
+            "findings": [{"primitive": a["primitive"], "diagnosis": a["diagnosis"],
+                          "file": a["file"]} for a in res.applied],
+            "edit_conflicts": res.conflicts,
+            "rationale": rationale,
+            "files_modified": sorted(cumulative),
+            "validation_score": score,
+            "validation_passed": passed,
+        })
+        if rnd == 1:
+            prov["first_derived_score"] = score
+        prov["final_derived_score"] = score
+
+        if passed:
+            prov["derived_validation_passed"] = True
             prov["repair_mode"] = "derived"
+            prov["final_score"] = score
             _emit_advanced(rid, prov)
             return rid, score, verdict, prov
-        print(f"[advanced] {scenario_id}: derived fix scored {score} / anti-cheat "
-              f"{verdict.get('anticheat_violations')} — falling back to golden replay")
+        print(f"[advanced] {scenario_id}: round {rnd} scored {score} / anti-cheat "
+              f"{verdict.get('anticheat_violations')}")
+        evidence_dir = RUNS_DIR / rid  # own-attempt feedback for the next round
+
+    if prov["rationale"] is None:
+        prov["rationale"] = "no repair primitive matched the broken tree / evidence"
+
+    if not allow_golden_fallback:
+        # generalization mode: no golden material may be consulted, ever.
+        prov["repair_mode"] = "failed" if prov["derived_attempted"] else "no_change"
+        if rid is None:
+            rid, score, verdict = _validate_candidate(scenario_id, None)
+        prov["final_score"] = score
+        _emit_advanced(rid, prov)
+        if enforce and score != 100:
+            raise SystemExit(f"{rid}: advanced tier scored {score} "
+                             f"(mode {prov['repair_mode']}, fallback disabled)")
+        return rid, score, verdict, prov
 
     # explicit fallback — the ONLY place golden.patch is read
     prov["fallback_used"] = True
+    if rid is not None:
+        _safe_cleanup_advanced(scenario_id)  # last failed round's namespace
     golden = _sdir(scenario_id) / scenmod._load_cfg(scenario_id)["patches"]["golden"]
     rid, score, verdict = scenmod.run_scenario(scenario_id, "advanced", enforce=False,
                                                agent_patch=golden)
     prov["final_score"] = score
-    if not edits:
-        prov["repair_mode"] = "golden_fallback" if score == 100 else "failed"
+    prov["repair_mode"] = "golden_fallback" if score == 100 else "failed"
+    if not prov["derived_attempted"]:
         prov["files_modified"] = ["golden.patch (fallback — no derived strategy matched)"]
     else:
-        prov["repair_mode"] = "golden_fallback" if score == 100 else "failed"
         prov["files_modified"] = prov["files_modified"] + ["golden.patch (fallback)"]
     _emit_advanced(rid, prov)
     if enforce and score != 100:
@@ -594,7 +324,8 @@ def _emit_advanced(run_id, prov):
     print(f"[advanced] {prov['scenario']}: repair_mode={prov['repair_mode']} "
           f"score={prov['final_score']} derived_attempted={prov['derived_attempted']} "
           f"derived_validation_passed={prov['derived_validation_passed']} "
-          f"fallback_used={prov['fallback_used']}")
+          f"fallback_used={prov['fallback_used']} "
+          f"rounds={prov.get('derived_rounds_attempted', 0)}")
 
 
 # ---------------------------------------------------------------------------
