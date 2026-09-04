@@ -6,8 +6,6 @@
 
 PipelineFixRL diagnoses broken container and Kubernetes deployments from source files and runtime evidence, derives deterministic repair patches, and validates them in a real Docker + kind environment.
 
-The runtime repair engine is implemented in **Python** and does **not** use Claude, GPT, or another LLM to generate repairs.
-
 **Tech:** Python · Kubernetes · kind · Docker · Helm · FastAPI · pytest · GitHub Actions
 
 ---
