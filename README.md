@@ -1,12 +1,12 @@
 # PipelineFixRL
 
-**Evidence-driven automated repair for CI/CD and Kubernetes failures.**
+Evidence-driven automated repair for CI/CD and Kubernetes failures.
 
 [![CI](https://github.com/Changjae-LE/pipelinefixrl/actions/workflows/ci.yml/badge.svg)](https://github.com/Changjae-LE/pipelinefixrl/actions/workflows/ci.yml)
 
 PipelineFixRL diagnoses broken container and Kubernetes deployments from source files and runtime evidence, derives deterministic repair patches, and validates them in a real Docker + kind environment.
 
-**Tech:** Python · Kubernetes · kind · Docker · Helm · FastAPI · pytest · GitHub Actions
+Tech: Python · Kubernetes · kind · Docker · Helm · FastAPI · pytest · GitHub Actions
 
 ---
 
@@ -27,14 +27,14 @@ runs for up to three rounds and records the outcome of each attempt.
 
 ## SRE / DevOps Skills Demonstrated
 
-- **Kubernetes troubleshooting:** reason about probes, Services, ports, configuration,
+- Kubernetes troubleshooting: reason about probes, Services, ports, configuration,
   and runtime constraints using source files, events, pods, and logs.
-- **Deployment automation:** rebuild Docker images and validate Helm deployments in a local kind cluster.
-- **Evidence-based remediation:** derive patches from observable failures and record
+- Deployment automation: rebuild Docker images and validate Helm deployments in a local kind cluster.
+- Evidence-based remediation: derive patches from observable failures and record
   `derived`, `golden_fallback`, `failed`, and `no_change` outcomes separately.
-- **CI validation:** GitHub Actions runs Ruff, pytest, Helm lint/template checks, and
+- CI validation: GitHub Actions runs Ruff, pytest, Helm lint/template checks, and
   an application image build. Full cluster evaluation is a separate manual E2E workflow.
-- **Reproducible evaluation:** frozen-agent held-out benchmarks, disabled golden
+- Reproducible evaluation: frozen-agent held-out benchmarks, disabled golden
   fallback, and checks against repairs that weaken the benchmark contracts.
 
 The current repair engine is deterministic and uses explicit domain knowledge.
@@ -47,19 +47,19 @@ remediation service.
 
 | Evaluation | Result |
 |---|---:|
-| v2 development / regression | **13/13 derived** |
-| v2 frozen held-out first-shot | **5/8 derived** |
-| Type A — represented relationships | **3/3** |
-| Type B — genuinely novel relationships | **0/3** |
-| Compound failures | **2/2** |
-| Post-archive golden validation | **8/8 at 100** |
-| Golden fallback | **0** |
+| v2 development / regression | 13/13 derived |
+| v2 frozen held-out first-shot | 5/8 derived |
+| Type A — represented relationships | 3/3 |
+| Type B — genuinely novel relationships | 0/3 |
+| Compound failures | 2/2 |
+| Post-archive golden validation | 8/8 at 100 |
+| Golden fallback | 0 |
 
-The v2 agent was **frozen before the held-out benchmark was authored**.
+The v2 agent was frozen before the held-out benchmark was authored.
 
 Type B failures were preserved without post-result tuning. Golden validation later reached 100 on all eight scenarios, confirming that those failures were capability boundaries of the frozen agent rather than invalid benchmark cases.
 
-> **13/13 is regression performance, not held-out generalization.**
+> 13/13 is regression performance, not held-out generalization.
 
 ---
 
@@ -67,7 +67,7 @@ Type B failures were preserved without post-result tuning. Golden validation lat
 
 The advanced repair engine uses the broken tree plus evidence from its own runtime attempts.
 
-It contains **7 reusable relationship primitives** covering:
+It contains 7 reusable relationship primitives covering:
 
 - source integrity and merge conflicts
 - Helm value wiring and image configuration
@@ -117,8 +117,8 @@ The second fault cannot produce useful runtime evidence until the first is fixed
 
 | Round | Observable problem | Repair | Score |
 |---|---|---|---:|
-| 1 | build blocked by merge conflict | resolve conflict | **75** |
-| 2 | consumer expects missing Service port | reconcile Service contract | **100** |
+| 1 | build blocked by merge conflict | resolve conflict | 75 |
+| 2 | consumer expects missing Service port | reconcile Service contract | 100 |
 
 The official evidence preserves:
 
@@ -137,14 +137,14 @@ so the result is never presented as an immediate one-shot solve.
 
 PipelineFixRL uses several controls to make repair results falsifiable.
 
-- **Agent freeze** — the repair engine is frozen before held-out scenarios exist.
-- **Held-out authoring after freeze** — benchmark cases are created afterward.
-- **Golden-access guard** — the derivation path cannot read `golden.patch`.
-- **Golden fallback disabled** — held-out success must be genuinely derived.
-- **One official first-shot run** — results are archived exactly once.
-- **Fail-closed anti-cheat** — repairs cannot pass by weakening probes, security posture, replica requirements, or benchmark contracts.
-- **Compose-check** — broken + golden patches must cleanly reconstruct the base.
-- **No post-result tuning** — Type B remained **0/3** after evaluation.
+- Agent freeze — the repair engine is frozen before held-out scenarios exist.
+- Held-out authoring after freeze — benchmark cases are created afterward.
+- Golden-access guard — the derivation path cannot read `golden.patch`.
+- Golden fallback disabled — held-out success must be genuinely derived.
+- One official first-shot run — results are archived exactly once.
+- Fail-closed anti-cheat — repairs cannot pass by weakening probes, security posture, replica requirements, or benchmark contracts.
+- Compose-check — broken + golden patches must cleanly reconstruct the base.
+- No post-result tuning — Type B remained 0/3 after evaluation.
 
 Full methodology: [`docs/GENERALIZATION.md`](docs/GENERALIZATION.md)
 
@@ -164,13 +164,13 @@ no_change:        3
 exceptions:       0
 ```
 
-**Type A** scenarios are new instances of relationships already represented by the frozen agent.
+Type A scenarios are new instances of relationships already represented by the frozen agent.
 
-**Type B** scenarios require genuinely absent reasoning capabilities. All three produced `no_change` and were intentionally preserved as capability boundaries.
+Type B scenarios require genuinely absent reasoning capabilities. All three produced `no_change` and were intentionally preserved as capability boundaries.
 
-**Compound** scenarios test multi-fault composition and iterative evidence discovery.
+Compound scenarios test multi-fault composition and iterative evidence discovery.
 
-Post-archive golden validation reached **8/8 at score 100** with all expectations matching and anti-cheat checks clean.
+Post-archive golden validation reached 8/8 at score 100 with all expectations matching and anti-cheat checks clean.
 
 Official evidence:
 
@@ -222,7 +222,7 @@ make test-fast
 make lint-py
 ```
 
-The current fast suite contains **337 deterministic tests**.
+The current fast suite contains 337 deterministic tests.
 
 ---
 
@@ -266,7 +266,7 @@ No universal repair claim is made.
 
 ## Project Evolution
 
-PipelineFixRL began as a Kubernetes repair environment for the **micro1 Agentic Workflows Hackathon** and was extended after the original submission.
+PipelineFixRL began as a Kubernetes repair environment for the micro1 Agentic Workflows Hackathon and was extended after the original submission.
 
 | Tag | Snapshot |
 |---|---|
