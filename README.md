@@ -10,6 +10,39 @@ PipelineFixRL diagnoses broken container and Kubernetes deployments from source 
 
 ---
 
+## How It Works
+
+```mermaid
+flowchart TD
+    A["Collect source and runtime evidence"] --> B["Derive a repair patch"]
+    B --> C["Build and deploy in Docker + kind"]
+    C --> D{"Deterministic checks pass?"}
+    D -->|Yes| E["Record validated repair and provenance"]
+    D -->|No| F["Observe new evidence"]
+    F --> B
+```
+
+Each candidate must build, deploy, and pass deterministic checks. The repair loop
+runs for up to three rounds and records the outcome of each attempt.
+
+## SRE / DevOps Skills Demonstrated
+
+- **Kubernetes troubleshooting:** reason about probes, Services, ports, configuration,
+  and runtime constraints using source files, events, pods, and logs.
+- **Deployment automation:** rebuild Docker images and validate Helm deployments in a local kind cluster.
+- **Evidence-based remediation:** derive patches from observable failures and record
+  `derived`, `golden_fallback`, `failed`, and `no_change` outcomes separately.
+- **CI validation:** GitHub Actions runs Ruff, pytest, Helm lint/template checks, and
+  an application image build. Full cluster evaluation is a separate manual E2E workflow.
+- **Reproducible evaluation:** frozen-agent held-out benchmarks, disabled golden
+  fallback, and checks against repairs that weaken the benchmark contracts.
+
+The current repair engine is deterministic and uses explicit domain knowledge.
+This is a local benchmark/reference system; it is not deployed as a production
+remediation service.
+
+---
+
 ## Key Results
 
 | Evaluation | Result |
@@ -27,39 +60,6 @@ The v2 agent was **frozen before the held-out benchmark was authored**.
 Type B failures were preserved without post-result tuning. Golden validation later reached 100 on all eight scenarios, confirming that those failures were capability boundaries of the frozen agent rather than invalid benchmark cases.
 
 > **13/13 is regression performance, not held-out generalization.**
-
----
-
-## How It Works
-
-```text
-Broken CI / Kubernetes deployment
-               │
-               ▼
-        Collect evidence
- source · manifests · build output
- events · pods · logs · failed checks
-               │
-               ▼
-      Relationship reasoning
-               │
-               ▼
-       Generate candidate patch
-               │
-               ▼
-       Build + deploy + score
-               │
-        ┌──────┴──────┐
-        │             │
-      healthy       unhealthy
-        │             │
-        ▼             ▼
-      success    observe new evidence
-                      │
-                      └──► refine repair
-```
-
-A patch is not considered correct because it looks plausible. It must actually build, deploy, and satisfy the same deterministic checks used to score every other variant.
 
 ---
 
